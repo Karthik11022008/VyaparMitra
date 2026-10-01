@@ -1,0 +1,1 @@
+"""VyaparMitra application package."""
