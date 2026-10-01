@@ -8,4 +8,4 @@ def test_health_endpoint():
     data = response.json()
     assert data["status"] == "ok"
     assert data["service"] == "VyaparMitra"
-    assert data["phase"] == "phase-1"
+    assert data["phase"] == "phase-4"

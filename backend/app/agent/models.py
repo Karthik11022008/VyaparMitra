@@ -1,0 +1,68 @@
+from decimal import Decimal
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
+
+class AgentRequest(BaseModel):
+    request: str = Field(..., min_length=3, description="User request in natural language")
+    session_id: Optional[str] = Field(default=None, description="Optional active reconciliation session ID")
+
+class SupplierDisputeNotice(BaseModel):
+    notice_id: str
+    supplier_reference: str
+    invoice_reference: str
+    discrepancy: str
+    verified_amount: Decimal
+    applicable_statutory_reference: str
+    requested_supplier_action: str
+    human_review_status: str = "DRAFT — REQUIRES HUMAN REVIEW"
+    notice_body: str
+
+class NoticeActionRequest(BaseModel):
+    session_id: Optional[str] = None
+    action: str = Field(..., description="Action: APPROVE, REJECT, or EDIT")
+    updated_body: Optional[str] = None
+
+class NoticeActionResponse(BaseModel):
+    notice_id: str
+    action: str
+    status: str
+    message: str
+
+class AgentSessionStep(BaseModel):
+    step_index: int
+    current_step: str
+    selected_tool: Optional[str] = None
+    tool_input: Optional[Dict[str, Any]] = None
+    tool_output: Optional[Dict[str, Any]] = None
+    reasoning_summary: str
+    timestamp: str
+
+class AgentSessionState(BaseModel):
+    session_id: str
+    user_request: str
+    current_step: str
+    steps: List[AgentSessionStep] = Field(default_factory=list)
+    tools_used: List[str] = Field(default_factory=list)
+    final_action: Optional[str] = None
+    timestamp: str
+
+class AgentFinding(BaseModel):
+    category: str
+    description: str
+    amount: Optional[Decimal] = None
+    severity: str = "medium"
+    recommended_action: str
+
+class AgentAnalyzeResponse(BaseModel):
+    status: str
+    session_id: str
+    summary: str
+    findings: List[AgentFinding]
+    actions: List[SupplierDisputeNotice]
+    tools_used: List[str]
+    human_review_required: bool = True
+    disclaimer: str = (
+        "VyaparMitra is an accounting and reconciliation assistance system. "
+        "It does not constitute statutory legal advice. "
+        "All supplier communications require human review and approval."
+    )

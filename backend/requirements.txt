@@ -7,3 +7,5 @@ pandas==3.0.6
 rapidfuzz==3.14.6
 python-multipart==0.0.32
 pytest==9.1.1
+google-genai==2.26.0
+openpyxl==3.1.5
