@@ -783,8 +783,44 @@ function App() {
                   </div>
                 )}
 
+                {gstr2bUpload?.preview_rows?.length > 0 && (
+                  <div className="preview-table-box" style={{ marginTop: '1rem' }}>
+                    <h4>GSTR-2B Statement Preview (First 5 Rows)</h4>
+                    <div className="data-table-container">
+                      <table className="fintech-table">
+                        <thead>
+                          <tr>
+                            <th>GSTIN</th>
+                            <th>Invoice No</th>
+                            <th>Date</th>
+                            <th>Taxable</th>
+                            <th>CGST</th>
+                            <th>SGST</th>
+                            <th>IGST</th>
+                            <th>Total Tax</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {gstr2bUpload.preview_rows.map((r, i) => (
+                            <tr key={i}>
+                              <td><code className="mono">{r.supplier_gstin}</code></td>
+                              <td><strong className="mono">{r.invoice_number}</strong></td>
+                              <td>{r.invoice_date || '-'}</td>
+                              <td className="mono">₹{r.taxable_value}</td>
+                              <td className="mono">₹{r.cgst}</td>
+                              <td className="mono">₹{r.sgst}</td>
+                              <td className="mono">₹{r.igst}</td>
+                              <td className="mono" style={{ color: 'var(--status-success)', fontWeight: 'bold' }}>₹{r.total_tax}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
                 {/* Step 3 Action Bar */}
-                <div style={{ marginTop: '1.25rem', display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                <div style={{ marginTop: '1.25rem', display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
                   <button
                     className="btn btn-primary"
                     onClick={runReconciliation}
@@ -800,6 +836,11 @@ function App() {
                   >
                     Load Verified Sample Dataset
                   </button>
+                  {!canRunReconcile && (
+                    <span className="text-muted" style={{ fontSize: '0.75rem' }}>
+                      Upload and validate both Purchase Register and GSTR-2B to enable reconciliation.
+                    </span>
+                  )}
                 </div>
 
                 {reconError && <div className="alert-error">{reconError}</div>}
