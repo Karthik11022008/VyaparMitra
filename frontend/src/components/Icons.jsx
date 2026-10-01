@@ -164,6 +164,21 @@ export const IconArrowRight = ({ size = 16, className = "", strokeWidth = 1.75, 
   </svg>
 )
 
+export const IconArrowLeft = ({ size = 16, className = "", strokeWidth = 1.75, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={`vm-icon ${className}`.trim()} aria-hidden="true" {...props}>
+    <line x1="19" x2="5" y1="12" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </svg>
+)
+
+export const IconMenu = ({ size = 16, className = "", strokeWidth = 1.75, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={`vm-icon ${className}`.trim()} aria-hidden="true" {...props}>
+    <line x1="4" x2="20" y1="12" y2="12" />
+    <line x1="4" x2="20" y1="6" y2="6" />
+    <line x1="4" x2="20" y1="18" y2="18" />
+  </svg>
+)
+
 export const IconEye = ({ size = 16, className = "", strokeWidth = 1.75, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={`vm-icon ${className}`.trim()} aria-hidden="true" {...props}>
     <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />

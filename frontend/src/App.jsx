@@ -21,7 +21,43 @@ import {
 } from './components/Icons'
 
 function App() {
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTabRaw] = useState('overview')
+  const [tabHistory, setTabHistory] = useState(['overview'])
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth <= 768
+    }
+    return false
+  })
+
+  const setActiveTab = (tab) => {
+    setActiveTabRaw(prev => {
+      if (prev !== tab) {
+        setTabHistory(h => {
+          if (h.length > 0 && h[h.length - 1] === tab) return h
+          return [...h.slice(-30), tab]
+        })
+      }
+      return tab
+    })
+  }
+
+  const handleBack = () => {
+    if (tabHistory.length > 1) {
+      const newHistory = [...tabHistory]
+      newHistory.pop()
+      const prevTab = newHistory[newHistory.length - 1]
+      setTabHistory(newHistory)
+      setActiveTabRaw(prevTab)
+    } else if (activeTab !== 'overview') {
+      setActiveTabRaw('overview')
+      setTabHistory(['overview'])
+    }
+  }
+
+  const canGoBack = tabHistory.length > 1 || activeTab !== 'overview'
+  const toggleSidebar = () => setIsSidebarCollapsed(prev => !prev)
+
   const [health, setHealth] = useState(null)
   const [healthLoading, setHealthLoading] = useState(true)
 
@@ -345,13 +381,23 @@ function App() {
   )
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      {/* Mobile Sidebar Backdrop */}
+      {!isSidebarCollapsed && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setIsSidebarCollapsed(true)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar Navigation */}
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         health={health}
         sessionId={sessionId}
+        onClose={() => setIsSidebarCollapsed(true)}
       />
 
       {/* Main Workspace View */}
@@ -363,6 +409,10 @@ function App() {
           onOpenAgent={() => setActiveTab('agent')}
           reconLoading={reconLoading}
           atRiskAmount={atRiskAmount}
+          onToggleSidebar={toggleSidebar}
+          isSidebarCollapsed={isSidebarCollapsed}
+          onBack={handleBack}
+          canGoBack={canGoBack}
         />
 
         <div className="workspace-container">

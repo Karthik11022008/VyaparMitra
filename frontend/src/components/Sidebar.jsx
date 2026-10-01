@@ -8,7 +8,7 @@ import {
   IconReports,
 } from './Icons'
 
-export const Sidebar = ({ activeTab, setActiveTab, health, sessionId }) => {
+export const Sidebar = ({ activeTab, setActiveTab, health, sessionId, onClose }) => {
   const navItems = [
     { id: 'overview', label: 'Command Center', icon: IconOverview, badge: null },
     { id: 'ingestion', label: 'File Ingestion', icon: IconUpload, badge: null },
@@ -17,6 +17,13 @@ export const Sidebar = ({ activeTab, setActiveTab, health, sessionId }) => {
     { id: 'audit', label: 'Audit Trail', icon: IconAudit, badge: null },
     { id: 'reports', label: 'Reports & Export', icon: IconReports, badge: null },
   ]
+
+  const handleNavClick = (id) => {
+    setActiveTab(id)
+    if (onClose && typeof window !== 'undefined' && window.innerWidth <= 768) {
+      onClose()
+    }
+  }
 
   return (
     <aside className="app-sidebar">
@@ -48,7 +55,7 @@ export const Sidebar = ({ activeTab, setActiveTab, health, sessionId }) => {
             <button
               key={item.id}
               className={`nav-item ${isActive ? 'nav-item-active' : ''}`}
-              onClick={() => setActiveTab(item.id)}
+              onClick={() => handleNavClick(item.id)}
             >
               <span className="nav-icon-wrapper">
                 <Icon size={16} />

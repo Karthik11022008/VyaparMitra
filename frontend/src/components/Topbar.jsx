@@ -1,5 +1,5 @@
 import React from 'react'
-import { IconCopilot, IconLedger, IconAlertTriangle } from './Icons'
+import { IconCopilot, IconLedger, IconAlertTriangle, IconMenu, IconArrowLeft } from './Icons'
 import { ThemeSwitcher } from './ThemeSwitcher'
 
 export const Topbar = ({
@@ -8,7 +8,11 @@ export const Topbar = ({
   onRunDemo,
   onOpenAgent,
   reconLoading,
-  atRiskAmount
+  atRiskAmount,
+  onToggleSidebar,
+  isSidebarCollapsed,
+  onBack,
+  canGoBack,
 }) => {
   const titles = {
     overview: 'Command Center & Executive Intelligence',
@@ -22,6 +26,29 @@ export const Topbar = ({
   return (
     <header className="app-topbar">
       <div className="topbar-left">
+        <button
+          type="button"
+          className="topbar-nav-btn topbar-menu-btn"
+          onClick={onToggleSidebar}
+          aria-label={isSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          title={isSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          aria-expanded={!isSidebarCollapsed}
+        >
+          <IconMenu size={16} />
+        </button>
+
+        <button
+          type="button"
+          className={`topbar-nav-btn topbar-back-btn ${!canGoBack ? 'disabled' : ''}`}
+          onClick={onBack}
+          disabled={!canGoBack}
+          aria-label="Go back to previous workspace"
+          title={canGoBack ? "Go back to previous workspace" : "At Command Center"}
+        >
+          <IconArrowLeft size={13} />
+          <span>Back</span>
+        </button>
+
         <div className="workspace-breadcrumb">
           <span className="crumb-root">VyaparMitra</span>
           <span className="crumb-sep">/</span>
