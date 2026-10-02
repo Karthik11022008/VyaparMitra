@@ -12,28 +12,53 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .coverage
+htmlcov/
 
-# Node.js
+# Node.js & Frontend
 node_modules/
+frontend/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+dist/
+frontend/dist/
 
 # Environment and secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
 
 # Build and distribution
 build/
-dist/
 *.egg
+
+# Database and SQLite runtime
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/*.db
+data/*.db-journal
 
 # Uploads and temporary data
 uploads/
 data/uploads/
-*.sqlite3
-*.db-journal
+temp_render/
+*.tmp
+
+# Video recordings & local rendering scripts
+*.mp4
+*.mov
+*.avi
+*.mkv
+build_final_demo_video.py
+
+# Local verification & scratch scripts
+verify_*.py
+test_script*.py
 
 # IDE and editor files
 .vscode/
