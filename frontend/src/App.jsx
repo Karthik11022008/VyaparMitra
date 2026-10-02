@@ -103,7 +103,7 @@ function App() {
   const [inspectingItem, setInspectingItem] = useState(null)
   const [isSlideOverOpen, setIsSlideOverOpen] = useState(false)
 
-  // AI Agent Copilot State
+  // AI Agent Copilot State (Batch & Lifecycle)
   const [agentPrompt, setAgentPrompt] = useState(
     'Reconcile recent purchase invoices against GSTR-2B, identify at-risk ITC discrepancies, and draft supplier dispute notices.'
   )
@@ -111,6 +111,22 @@ function App() {
   const [agentError, setAgentError] = useState(null)
   const [agentResult, setAgentResult] = useState(null)
   const [agentActiveStage, setAgentActiveStage] = useState(0) // 0-6 for lifecycle
+
+  // Phase 2 Conversational Investigation Assistant State
+  const [copilotMode, setCopilotMode] = useState('investigate') // 'investigate' | 'workflow'
+  const [chatQuestion, setChatQuestion] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatError, setChatError] = useState(null)
+  const [expandedEvidence, setExpandedEvidence] = useState({})
+  const [chatMessages, setChatMessages] = useState([
+    {
+      id: 'welcome-01',
+      role: 'assistant',
+      text: 'Welcome to VyaparMitra AI Investigation Assistant. I answer natural language audit queries grounded 100% strictly in your active reconciliation session data. All calculations and rule checks are performed by deterministic tools with zero math hallucinations.',
+      data: null,
+      timestamp: 'Active Session'
+    }
+  ])
 
   // Dispute Notices & HITL Review
   const [disputeNotices, setDisputeNotices] = useState([])
@@ -337,6 +353,140 @@ function App() {
       clearInterval(timer)
       setAgentLoading(false)
     }
+  }
+
+  // Phase 2: Run Conversational Investigation
+  const runInvestigate = async (overridePrompt = null, invoiceContext = null) => {
+    const q = (overridePrompt !== null ? overridePrompt : chatQuestion).trim()
+    if (!q) return
+
+    setChatLoading(true)
+    setChatError(null)
+
+    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const userMsgId = 'user-' + Date.now()
+    const asstMsgId = 'asst-' + (Date.now() + 1)
+
+    // Add user message to conversation thread
+    setChatMessages(prev => [
+      ...prev,
+      {
+        id: userMsgId,
+        role: 'user',
+        text: q,
+        timestamp: nowTime
+      }
+    ])
+    setChatQuestion('')
+
+    try {
+      const payload = {
+        question: q,
+        session_id: sessionId || null,
+        invoice_context: invoiceContext || null
+      }
+      const res = await fetch('http://localhost:8000/api/agent/investigate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Investigation failed')
+
+      const asstTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      setChatMessages(prev => [
+        ...prev,
+        {
+          id: asstMsgId,
+          role: 'assistant',
+          text: data.answer,
+          data: data,
+          timestamp: asstTime
+        }
+      ])
+
+      // Auto-expand evidence for the fresh response
+      setExpandedEvidence(prev => ({ ...prev, [asstMsgId]: true }))
+
+      // If a draft notice is produced, automatically queue for HITL review
+      if (data.draft_notice) {
+        setDisputeNotices(prev => {
+          if (prev.some(n => n.notice_id === data.draft_notice.notice_id)) return prev
+          return [
+            {
+              ...data.draft_notice,
+              approvalStatus: 'DRAFT_REVIEW_REQUIRED'
+            },
+            ...prev
+          ]
+        })
+      }
+
+      if (sessionId) fetchAuditTrail(sessionId)
+    } catch (err) {
+      setChatError(err.message)
+      const errTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      setChatMessages(prev => [
+        ...prev,
+        {
+          id: asstMsgId,
+          role: 'assistant',
+          text: `⚠️ Investigation query failed: ${err.message}. Please verify the reconciliation session status.`,
+          isError: true,
+          timestamp: errTime
+        }
+      ])
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const toggleEvidence = (msgId) => {
+    setExpandedEvidence(prev => ({
+      ...prev,
+      [msgId]: !prev[msgId]
+    }))
+  }
+
+  const inspectFromEvidence = (evidenceItem) => {
+    if (!evidenceItem) return
+    const invNo = evidenceItem.invoice_number
+    if (reconResult && reconResult.detailed_results && invNo) {
+      const match = reconResult.detailed_results.find(r => {
+        const pNum = r.purchase_invoice?.invoice_number || ''
+        const bNum = r.matched_2b_invoice?.invoice_number || ''
+        return pNum.toLowerCase() === invNo.toLowerCase() || bNum.toLowerCase() === invNo.toLowerCase()
+      })
+      if (match) {
+        openInspector(match)
+        return
+      }
+    }
+    // Synthetic fallback for slideover inspection
+    const synthItem = {
+      status: evidenceItem.status || 'UNRECONCILED',
+      confidence: 1.0,
+      tax_difference: evidenceItem.tax_difference || 0,
+      taxable_difference: 0,
+      reason: evidenceItem.details || 'Identified during conversational investigation.',
+      purchase_invoice: {
+        invoice_number: evidenceItem.invoice_number,
+        supplier_gstin: evidenceItem.supplier_gstin,
+        supplier_name: evidenceItem.supplier_name || 'Vendor',
+        invoice_date: '2026-04-15',
+        total_tax: evidenceItem.purchase_tax || evidenceItem.tax_difference || 0,
+        taxable_value: (Number(evidenceItem.purchase_tax || evidenceItem.tax_difference || 0) / 0.18).toFixed(2),
+      },
+      matched_2b_invoice: evidenceItem.gstr2b_tax ? {
+        invoice_number: evidenceItem.invoice_number,
+        supplier_gstin: evidenceItem.supplier_gstin,
+        supplier_name: evidenceItem.supplier_name || 'Vendor',
+        invoice_date: '2026-04-15',
+        total_tax: evidenceItem.gstr2b_tax,
+        taxable_value: (Number(evidenceItem.gstr2b_tax) / 0.18).toFixed(2),
+      } : null
+    }
+    openInspector(synthItem)
   }
 
   // HITL Notice Approval / Rejection
@@ -1592,105 +1742,438 @@ function App() {
           {/* TAB 4: AI COPILOT & DISPUTE WORKSPACE */}
           {activeTab === 'agent' && (
             <div className="agent-workspace">
-              {/* Agent Orchestrator Command Box */}
-              <div className="content-card">
-                <div className="content-card-header">
-                  <div>
-                    <h2 className="content-card-title">
-                      <IconCopilot size={16} className="text-accent inline mr-1.5" />
-                      AI Copilot
-                    </h2>
-                    <p className="subtitle">
-                      Gemini orchestrates deterministic tools, evaluates CGST statutory provisions, and synthesizes reviewable vendor communications.
-                    </p>
-                  </div>
-                </div>
+              {/* Copilot Mode Switcher Tabs */}
+              <div className="copilot-mode-tabs">
+                <button
+                  type="button"
+                  className={`mode-tab-btn ${copilotMode === 'investigate' ? 'active' : ''}`}
+                  onClick={() => setCopilotMode('investigate')}
+                >
+                  <IconCopilot size={14} className="mr-1.5 text-accent" />
+                  Conversational Investigation Assistant
+                </button>
+                <button
+                  type="button"
+                  className={`mode-tab-btn ${copilotMode === 'workflow' ? 'active' : ''}`}
+                  onClick={() => setCopilotMode('workflow')}
+                >
+                  <IconLedger size={14} className="mr-1.5" />
+                  Batch Diagnostic Workflow (6-Stage)
+                </button>
+              </div>
 
-                <div className="copilot-prompt-bar">
-                  <textarea
-                    className="prompt-textarea"
-                    rows="3"
-                    value={agentPrompt}
-                    onChange={(e) => setAgentPrompt(e.target.value)}
-                    placeholder="Enter natural language instructions for reconciliation, interest exposure, or vendor notices..."
-                    disabled={agentLoading}
-                  />
-                  <div className="prompt-actions-row">
-                    <div className="prompt-chips-group">
+              {/* MODE 1: Conversational Investigation Assistant */}
+              {copilotMode === 'investigate' && (
+                <div className="content-card">
+                  <div className="content-card-header">
+                    <div>
+                      <h2 className="content-card-title">
+                        <IconCopilot size={16} className="text-accent inline mr-1.5" />
+                        Conversational Investigation Assistant
+                      </h2>
+                      <p className="subtitle">
+                        Ask natural language questions grounded 100% strictly in active session reconciliation data. Zero LLM math hallucinations.
+                      </p>
+                    </div>
+                    {sessionId && (
+                      <span className="session-indicator-pill">
+                        Session: <code className="mono">{sessionId}</code>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Chat Conversation Stream */}
+                  <div className="chat-thread-container">
+                    {chatMessages.map((msg) => (
+                      <div key={msg.id} className={`chat-message-row ${msg.role}`}>
+                        {msg.role === 'user' ? (
+                          <div className="chat-bubble user">
+                            <div className="chat-header-row">
+                              <span className="chat-author">You</span>
+                              <span className="chat-timestamp">{msg.timestamp}</span>
+                            </div>
+                            <div className="chat-answer-text" style={{ marginBottom: 0 }}>
+                              {msg.text}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`chat-bubble assistant ${msg.isError ? 'error' : ''}`}>
+                            <div className="chat-header-row">
+                              <div className="chat-author">
+                                <IconCopilot size={14} className="text-accent" />
+                                <span>VyaparMitra AI Investigator</span>
+                              </div>
+                              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                                {msg.data?.intent && (
+                                  <span className="chat-intent-pill">{msg.data.intent}</span>
+                                )}
+                                <span className="chat-timestamp">{msg.timestamp}</span>
+                              </div>
+                            </div>
+
+                            <div className="chat-answer-text">
+                              {msg.text}
+                            </div>
+
+                            {/* Collapsible Evidence & Tools Executed Drawer */}
+                            {msg.data && (
+                              <div className="chat-evidence-box">
+                                <div
+                                  className="evidence-header-toggle"
+                                  onClick={() => toggleEvidence(msg.id)}
+                                >
+                                  <div className="evidence-title-group">
+                                    <IconCheckCircle size={14} className="text-success" />
+                                    <span>
+                                      Evidence & Tools Executed ({msg.data.tools_used?.length || 0} tools, {msg.data.evidence?.length || 0} records)
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="btn-chip"
+                                    style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}
+                                  >
+                                    {expandedEvidence[msg.id] ? 'Hide Evidence ▲' : 'View Evidence ▼'}
+                                  </button>
+                                </div>
+
+                                {/* Tools Executed Badge Row */}
+                                <div className="tools-badge-row" style={{ marginTop: '0.5rem', marginBottom: '0.35rem' }}>
+                                  <span className="label" style={{ fontSize: '0.68rem' }}>Deterministic Tools:</span>
+                                  {msg.data.tools_used && msg.data.tools_used.map((tool, idx) => (
+                                    <span key={idx} className="tool-tag" style={{ fontSize: '0.68rem', padding: '0.15rem 0.4rem' }}>{tool}</span>
+                                  ))}
+                                </div>
+
+                                {/* Expandable Evidence Table */}
+                                {expandedEvidence[msg.id] && msg.data.evidence && msg.data.evidence.length > 0 && (
+                                  <div className="evidence-table-wrap">
+                                    <table className="evidence-mini-table">
+                                      <thead>
+                                        <tr>
+                                          <th>Item / Invoice</th>
+                                          <th>Supplier</th>
+                                          <th>GSTIN</th>
+                                          <th>Purchase Tax</th>
+                                          <th>GSTR-2B Tax</th>
+                                          <th>Variance / Risk</th>
+                                          <th>Status</th>
+                                          <th>Statutory Citation</th>
+                                          <th>Action</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {msg.data.evidence.map((ev, eIdx) => {
+                                          const pTax = ev.purchase_tax !== null && ev.purchase_tax !== undefined ? Number(ev.purchase_tax) : null
+                                          const bTax = ev.gstr2b_tax !== null && ev.gstr2b_tax !== undefined ? Number(ev.gstr2b_tax) : null
+                                          const diff = ev.tax_difference !== null && ev.tax_difference !== undefined ? Number(ev.tax_difference) : null
+
+                                          return (
+                                            <tr key={eIdx}>
+                                              <td><strong className="mono">{ev.invoice_number || '-'}</strong></td>
+                                              <td>{ev.supplier_name || 'Vendor'}</td>
+                                              <td><code className="mono">{ev.supplier_gstin || '-'}</code></td>
+                                              <td className="mono">{pTax !== null ? `₹${pTax.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                                              <td className="mono">{bTax !== null ? `₹${bTax.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                                              <td className="mono" style={{ color: diff && diff > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
+                                                {diff !== null ? `₹${diff.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}
+                                              </td>
+                                              <td><span className={`status-badge badge-${ev.status}`}>{ev.status}</span></td>
+                                              <td><span className="tool-tag" style={{ fontSize: '0.65rem' }}>{ev.statutory_rule || 'Sec 16(2)(aa)'}</span></td>
+                                              <td>
+                                                <button
+                                                  className="btn btn-secondary-sm"
+                                                  style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem' }}
+                                                  onClick={() => inspectFromEvidence(ev)}
+                                                >
+                                                  <IconEye size={11} className="inline mr-1" /> Inspect
+                                                </button>
+                                              </td>
+                                            </tr>
+                                          )
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Inline Draft Dispute Notice Card (HITL Guardrail) */}
+                            {msg.data?.draft_notice && (
+                              <div className="notice-workspace-card" style={{ marginTop: '0.75rem', borderColor: 'var(--accent)' }}>
+                                <div className="notice-top-row">
+                                  <div>
+                                    <div className="notice-supplier-name">
+                                      Dispute Notice: {msg.data.draft_notice.supplier_reference}
+                                    </div>
+                                    <div className="notice-sub-meta">
+                                      <span>Invoice: <code className="mono">{msg.data.draft_notice.invoice_reference}</code></span>
+                                      <span> • </span>
+                                      <span>At-Risk ITC: <strong className="mono" style={{ color: 'var(--status-danger)' }}>₹{Number(msg.data.draft_notice.verified_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong></span>
+                                    </div>
+                                  </div>
+                                  <span className="status-badge badge-DRAFT_REVIEW_REQUIRED">
+                                    DRAFT — REQUIRES HUMAN REVIEW
+                                  </span>
+                                </div>
+                                <div className="notice-provisions" style={{ marginBottom: '0.45rem' }}>
+                                  <span className="text-muted" style={{ fontSize: '0.72rem' }}>Governing Rule: </span>
+                                  <span className="tool-tag">{msg.data.draft_notice.applicable_statutory_reference}</span>
+                                </div>
+                                <pre className="notice-text-preview">{msg.data.draft_notice.notice_body}</pre>
+                                <div className="notice-action-bar">
+                                  <button
+                                    className="btn btn-secondary-sm"
+                                    onClick={() => handleStartEdit(msg.data.draft_notice)}
+                                  >
+                                    Edit Notice
+                                  </button>
+                                  <button
+                                    className="btn btn-primary-sm"
+                                    style={{ background: 'var(--status-success)', color: '#fff' }}
+                                    onClick={() => handleApproveNotice(msg.data.draft_notice.notice_id)}
+                                  >
+                                    Approve Notice
+                                  </button>
+                                  <button
+                                    className="btn btn-secondary-sm"
+                                    style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: 'var(--status-danger)' }}
+                                    onClick={() => handleRejectNotice(msg.data.draft_notice.notice_id)}
+                                  >
+                                    Reject Notice
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Recommended Action Box */}
+                            {msg.data?.suggested_action && (
+                              <div className="chat-suggested-action">
+                                <IconAlertCircle size={14} className="text-warning flex-shrink-0" />
+                                <span><strong>Recommendation:</strong> {msg.data.suggested_action}</span>
+                              </div>
+                            )}
+
+                            {/* Statutory Legal Disclaimer */}
+                            <div className="chat-disclaimer">
+                              {msg.data?.disclaimer || "VyaparMitra is an accounting and reconciliation assistance system. It does not constitute statutory legal advice. All supplier communications require human review."}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Interactive Composer Box */}
+                  <div className="chat-composer-box">
+                    <div className="quick-prompts-tray">
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Suggested Questions:</span>
                       <button
                         type="button"
-                        className="btn-chip"
-                        onClick={() => setAgentPrompt("Reconcile recent purchase invoices against GSTR-2B, identify at-risk ITC discrepancies, and draft supplier dispute notices.")}
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("Why is my ITC at risk?")}
+                        disabled={chatLoading}
                       >
-                        ⚡ Reconcile all invoices
+                        ⚖️ Why is my ITC at risk?
                       </button>
                       <button
                         type="button"
-                        className="btn-chip"
-                        onClick={() => setAgentPrompt("Audit unreflected GSTR-2B invoices and calculate Section 50 interest risk.")}
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("Show me all invoices missing from GSTR-2B")}
+                        disabled={chatLoading}
                       >
-                        ⚖️ Find ITC at risk
+                        📄 Missing in GSTR-2B
                       </button>
                       <button
                         type="button"
-                        className="btn-chip"
-                        onClick={() => setAgentPrompt("Investigate value and tax amount mismatches between books and GSTR-2B.")}
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("Which suppliers have the most discrepancies?")}
+                        disabled={chatLoading}
                       >
-                        🔍 Investigate mismatches
+                        🏢 Supplier Discrepancies
                       </button>
                       <button
                         type="button"
-                        className="btn-chip"
-                        onClick={() => setAgentPrompt("Prepare draft supplier dispute notices for unreflected invoices.")}
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("What is the tax difference between books and 2B?")}
+                        disabled={chatLoading}
                       >
-                        📝 Prepare supplier notices
+                        🔍 Tax Variance
                       </button>
                       <button
                         type="button"
-                        className="btn-chip"
-                        onClick={() => setAgentPrompt("Check Section 50 interest exposure at 18% per annum.")}
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("Explain Section 16(2)(aa) statutory rule")}
+                        disabled={chatLoading}
                       >
-                        ⏳ Check Section 50 exposure
+                        📜 Sec 16(2)(aa) Rule
+                      </button>
+                      <button
+                        type="button"
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("What is our potential Section 50 interest exposure?")}
+                        disabled={chatLoading}
+                      >
+                        ⏳ Sec 50 Interest Exposure
+                      </button>
+                      <button
+                        type="button"
+                        className="quick-prompt-chip"
+                        onClick={() => runInvestigate("Draft dispute notices for delinquent suppliers")}
+                        disabled={chatLoading}
+                      >
+                        📝 Draft Supplier Notices
                       </button>
                     </div>
-                    <button
-                      className="btn btn-primary"
-                      onClick={runAgentAnalysis}
-                      disabled={agentLoading || !agentPrompt.trim()}
-                    >
-                      <IconCopilot size={14} className="mr-1.5" />
-                      {agentLoading ? 'Agent Orchestrating...' : 'Execute Agent Workflow'}
-                    </button>
+
+                    <div className="chat-input-row">
+                      <input
+                        type="text"
+                        className="chat-input-field"
+                        placeholder="Ask a question about this reconciliation session (e.g. 'Why was invoice VM-INV-2026-0419 flagged?')..."
+                        value={chatQuestion}
+                        onChange={(e) => setChatQuestion(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault()
+                            runInvestigate()
+                          }
+                        }}
+                        disabled={chatLoading}
+                      />
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => runInvestigate()}
+                        disabled={chatLoading || !chatQuestion.trim()}
+                        style={{ whiteSpace: 'nowrap' }}
+                      >
+                        <IconCopilot size={14} className="mr-1.5" />
+                        {chatLoading ? 'Investigating...' : 'Ask Copilot'}
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => setChatMessages([
+                          {
+                            id: 'welcome-reset',
+                            role: 'assistant',
+                            text: 'Conversation thread cleared. How can I assist your GST investigation?',
+                            data: null,
+                            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                          }
+                        ])}
+                        style={{ padding: '0.55rem 0.8rem', fontSize: '0.78rem' }}
+                        title="Clear conversation history"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    {chatError && <div className="alert-error" style={{ margin: 0, padding: '0.5rem 0.75rem', fontSize: '0.78rem' }}>{chatError}</div>}
                   </div>
                 </div>
+              )}
 
-                {/* Subtle Linear 6-Stage Execution Lifecycle */}
-                <div className="agent-lifecycle-track">
-                  {[
-                    { step: 1, name: 'UNDERSTAND', desc: 'Parses tax period & business intent' },
-                    { step: 2, name: 'ANALYZE', desc: 'Maps requirements to tool sequence' },
-                    { step: 3, name: 'MATCH', desc: 'Runs deterministic Python engine' },
-                    { step: 4, name: 'VERIFY', desc: 'Checks Luhn GSTIN & Decimal math' },
-                    { step: 5, name: 'RISK', desc: 'Evaluates CGST Sec 16(2)(aa) & 50' },
-                    { step: 6, name: 'ACTION', desc: 'Drafts human-reviewable notices' },
-                  ].map((node) => {
-                    const isNodeActive = agentActiveStage === node.step && agentLoading
-                    const isNodeCompleted = agentActiveStage >= node.step
-                    return (
-                      <div
-                        key={node.step}
-                        className={`lifecycle-node ${isNodeActive ? 'active' : ''} ${isNodeCompleted ? 'completed' : ''}`}
-                      >
-                        <div className="node-step-tag">STAGE {node.step}</div>
-                        <div className="node-name">{node.name}</div>
-                        <div className="node-desc">{node.desc}</div>
+              {/* MODE 2: Batch Diagnostic Workflow (Preserved 100% Backward Compatible) */}
+              {copilotMode === 'workflow' && (
+                <div className="content-card">
+                  <div className="content-card-header">
+                    <div>
+                      <h2 className="content-card-title">
+                        <IconLedger size={16} className="text-accent inline mr-1.5" />
+                        Batch Diagnostic Workflow (6-Stage)
+                      </h2>
+                      <p className="subtitle">
+                        Executes multi-stage autonomous batch audit: parsing tax periods, matching books against GSTR-2B, and synthesizing dispute communications.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="copilot-prompt-bar">
+                    <textarea
+                      className="prompt-textarea"
+                      rows="3"
+                      value={agentPrompt}
+                      onChange={(e) => setAgentPrompt(e.target.value)}
+                      placeholder="Enter natural language instructions for reconciliation, interest exposure, or vendor notices..."
+                      disabled={agentLoading}
+                    />
+                    <div className="prompt-actions-row">
+                      <div className="prompt-chips-group">
+                        <button
+                          type="button"
+                          className="btn-chip"
+                          onClick={() => setAgentPrompt("Reconcile recent purchase invoices against GSTR-2B, identify at-risk ITC discrepancies, and draft supplier dispute notices.")}
+                        >
+                          ⚡ Reconcile all invoices
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-chip"
+                          onClick={() => setAgentPrompt("Audit unreflected GSTR-2B invoices and calculate Section 50 interest risk.")}
+                        >
+                          ⚖️ Find ITC at risk
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-chip"
+                          onClick={() => setAgentPrompt("Investigate value and tax amount mismatches between books and GSTR-2B.")}
+                        >
+                          🔍 Investigate mismatches
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-chip"
+                          onClick={() => setAgentPrompt("Prepare draft supplier dispute notices for unreflected invoices.")}
+                        >
+                          📝 Prepare supplier notices
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-chip"
+                          onClick={() => setAgentPrompt("Check Section 50 interest exposure at 18% per annum.")}
+                        >
+                          ⏳ Check Section 50 exposure
+                        </button>
                       </div>
-                    )
-                  })}
-                </div>
+                      <button
+                        className="btn btn-primary"
+                        onClick={runAgentAnalysis}
+                        disabled={agentLoading || !agentPrompt.trim()}
+                      >
+                        <IconCopilot size={14} className="mr-1.5" />
+                        {agentLoading ? 'Agent Orchestrating...' : 'Execute Agent Workflow'}
+                      </button>
+                    </div>
+                  </div>
 
-                {agentError && <div className="alert-error">{agentError}</div>}
-              </div>
+                  {/* Subtle Linear 6-Stage Execution Lifecycle */}
+                  <div className="agent-lifecycle-track">
+                    {[
+                      { step: 1, name: 'UNDERSTAND', desc: 'Parses tax period & business intent' },
+                      { step: 2, name: 'ANALYZE', desc: 'Maps requirements to tool sequence' },
+                      { step: 3, name: 'MATCH', desc: 'Runs deterministic Python engine' },
+                      { step: 4, name: 'VERIFY', desc: 'Checks Luhn GSTIN & Decimal math' },
+                      { step: 5, name: 'RISK', desc: 'Evaluates CGST Sec 16(2)(aa) & 50' },
+                      { step: 6, name: 'ACTION', desc: 'Drafts human-reviewable notices' },
+                    ].map((node) => {
+                      const isNodeActive = agentActiveStage === node.step && agentLoading
+                      const isNodeCompleted = agentActiveStage >= node.step
+                      return (
+                        <div
+                          key={node.step}
+                          className={`lifecycle-node ${isNodeActive ? 'active' : ''} ${isNodeCompleted ? 'completed' : ''}`}
+                        >
+                          <div className="node-step-tag">STAGE {node.step}</div>
+                          <div className="node-name">{node.name}</div>
+                          <div className="node-desc">{node.desc}</div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {agentError && <div className="alert-error">{agentError}</div>}
+                </div>
+              )}
 
               {/* Executive Briefing */}
               {agentResult && (

@@ -66,3 +66,38 @@ class AgentAnalyzeResponse(BaseModel):
         "It does not constitute statutory legal advice. "
         "All supplier communications require human review and approval."
     )
+
+# --- Phase 2 Conversational Investigation Models ---
+
+class AgentInvestigateRequest(BaseModel):
+    question: str = Field(..., min_length=1, description="Conversational query regarding reconciliation session")
+    session_id: Optional[str] = Field(default=None, description="Active reconciliation session ID")
+    invoice_context: Optional[str] = Field(default=None, description="Optional invoice number context")
+
+class AgentEvidenceItem(BaseModel):
+    invoice_number: str
+    supplier_gstin: str
+    supplier_name: Optional[str] = ""
+    purchase_tax: Optional[Decimal] = None
+    gstr2b_tax: Optional[Decimal] = None
+    tax_difference: Optional[Decimal] = None
+    status: str
+    statutory_rule: Optional[str] = None
+    details: Optional[str] = None
+
+class AgentInvestigateResponse(BaseModel):
+    status: str = "success"
+    session_id: str
+    user_question: str
+    intent: str
+    answer: str
+    evidence: List[AgentEvidenceItem] = Field(default_factory=list)
+    tools_used: List[str] = Field(default_factory=list)
+    suggested_action: Optional[str] = None
+    draft_notice: Optional[SupplierDisputeNotice] = None
+    human_review_required: bool = False
+    disclaimer: str = (
+        "VyaparMitra is an accounting and reconciliation assistance system. "
+        "It does not constitute statutory legal advice. "
+        "All supplier communications require human review and approval."
+    )

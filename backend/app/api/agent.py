@@ -5,6 +5,8 @@ from backend.app.agent.models import (
     AgentAnalyzeResponse,
     NoticeActionRequest,
     NoticeActionResponse,
+    AgentInvestigateRequest,
+    AgentInvestigateResponse,
 )
 from backend.app.agent.orchestrator import VyaparMitraOrchestrator, get_agent_orchestrator
 from backend.app.database import log_audit_event
@@ -31,6 +33,26 @@ async def analyze_reconciliation(
         raise HTTPException(
             status_code=500,
             detail="An error occurred while orchestrating the agent reconciliation workflow."
+        )
+
+@router.post("/investigate", response_model=AgentInvestigateResponse)
+async def investigate_query(
+    payload: AgentInvestigateRequest,
+    orchestrator: VyaparMitraOrchestrator = Depends(get_agent_orchestrator)
+):
+    """
+    Phase 2 Conversational Investigation Endpoint:
+    Processes natural language queries regarding the active reconciliation session,
+    producing plain-language answers grounded strictly in deterministic tool outputs.
+    """
+    try:
+        response = orchestrator.investigate(payload)
+        return response
+    except Exception as e:
+        logger.error(f"Error in agent investigate endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while processing the conversational investigation query."
         )
 
 @router.post("/notice/{notice_id}/action", response_model=NoticeActionResponse)
