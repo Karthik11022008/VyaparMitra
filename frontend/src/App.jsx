@@ -118,6 +118,7 @@ function App() {
   const [chatLoading, setChatLoading] = useState(false)
   const [chatError, setChatError] = useState(null)
   const [expandedEvidence, setExpandedEvidence] = useState({})
+  const [expandedActivity, setExpandedActivity] = useState({})
   const [chatMessages, setChatMessages] = useState([
     {
       id: 'welcome-01',
@@ -405,8 +406,9 @@ function App() {
         }
       ])
 
-      // Auto-expand evidence for the fresh response
+      // Auto-expand evidence and activity for the fresh response
       setExpandedEvidence(prev => ({ ...prev, [asstMsgId]: true }))
+      setExpandedActivity(prev => ({ ...prev, [asstMsgId]: true }))
 
       // If a draft notice is produced, automatically queue for HITL review
       if (data.draft_notice) {
@@ -443,6 +445,13 @@ function App() {
 
   const toggleEvidence = (msgId) => {
     setExpandedEvidence(prev => ({
+      ...prev,
+      [msgId]: !prev[msgId]
+    }))
+  }
+
+  const toggleActivity = (msgId) => {
+    setExpandedActivity(prev => ({
       ...prev,
       [msgId]: !prev[msgId]
     }))
@@ -1814,6 +1823,72 @@ function App() {
                             <div className="chat-answer-text">
                               {msg.text}
                             </div>
+
+                            {/* Phase 3 Dynamic Reasoning & Step-by-Step Execution Trace */}
+                            {msg.data?.steps_executed && msg.data.steps_executed.length > 0 && (
+                              <div className="chat-activity-box">
+                                <div
+                                  className="activity-header-toggle"
+                                  onClick={() => toggleActivity(msg.id)}
+                                >
+                                  <div className="activity-title-group">
+                                    <IconCopilot size={14} className="text-accent" />
+                                    <span>
+                                      Agent Reasoning & Execution Steps ({msg.data.steps_executed.length} steps)
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="btn-chip"
+                                    style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}
+                                  >
+                                    {expandedActivity[msg.id] ? 'Hide Activity ▲' : 'View Activity ▼'}
+                                  </button>
+                                </div>
+
+                                {expandedActivity[msg.id] && (
+                                  <div className="activity-expanded-content">
+                                    {/* Investigation Plan */}
+                                    {msg.data.plan && msg.data.plan.length > 0 && (
+                                      <div className="agent-plan-card">
+                                        <div className="agent-plan-heading">
+                                          <span>Strategic Investigation Plan</span>
+                                          <span className="mono text-muted" style={{ fontSize: '0.68rem' }}>{msg.data.plan.length} stages formulated</span>
+                                        </div>
+                                        <ol className="agent-plan-steps">
+                                          {msg.data.plan.map((pStep, pIdx) => (
+                                            <li key={pIdx}>
+                                              <span className="plan-step-num">{pIdx + 1}</span>
+                                              <span className="plan-step-text">{pStep}</span>
+                                            </li>
+                                          ))}
+                                        </ol>
+                                      </div>
+                                    )}
+
+                                    {/* Step Execution Sequence */}
+                                    <div className="agent-steps-timeline">
+                                      <div className="agent-timeline-heading">Verified Tool Execution Trace:</div>
+                                      {msg.data.steps_executed.map((st) => (
+                                        <div key={st.step_index} className="agent-trace-card">
+                                          <div className="agent-trace-top">
+                                            <div className="agent-trace-badge">Step {st.step_index}</div>
+                                            <code className="tool-tag" style={{ fontWeight: 600 }}>{st.tool_name}</code>
+                                            <span className={`status-badge badge-${st.status === 'SUCCESS' ? 'EXACT_MATCH' : 'AMOUNT_MISMATCH'}`} style={{ fontSize: '0.62rem', padding: '0.1rem 0.4rem' }}>
+                                              {st.status}
+                                            </span>
+                                            <span className="agent-trace-duration mono">{st.duration_ms}ms</span>
+                                          </div>
+                                          <div className="agent-trace-summary">
+                                            {st.observation_summary}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
 
                             {/* Collapsible Evidence & Tools Executed Drawer */}
                             {msg.data && (

@@ -267,78 +267,360 @@ AVAILABLE_TOOLS = {
     "tool_search_invoices": tool_search_invoices,
 }
 
+from dataclasses import dataclass, field
+import time
+from datetime import datetime, timezone
+
+@dataclass
+class ToolContract:
+    name: str
+    description: str
+    category: str  # "reconciliation", "validation", "normalization", "calculation", "statutory_lookup", "data_retrieval"
+    parameters: Dict[str, Any]
+    required_params: List[str]
+    is_deterministic: bool = True
+    requires_session: bool = False
+    side_effect: bool = False
+
+TOOL_CONTRACTS: Dict[str, ToolContract] = {
+    "tool_run_reconciliation": ToolContract(
+        name="tool_run_reconciliation",
+        description="Executes full multi-stage deterministic reconciliation engine on demo or active dataset.",
+        category="reconciliation",
+        parameters={},
+        required_params=[],
+        is_deterministic=True,
+        requires_session=False,
+    ),
+    "tool_validate_gstin": ToolContract(
+        name="tool_validate_gstin",
+        description="Validates 15-character Indian GSTIN structure and Luhn Mod 36 checksum.",
+        category="validation",
+        parameters={
+            "gstin": {"type": "string", "description": "15-character GSTIN string to validate."}
+        },
+        required_params=["gstin"],
+        is_deterministic=True,
+        requires_session=False,
+    ),
+    "tool_normalize_invoice": ToolContract(
+        name="tool_normalize_invoice",
+        description="Normalizes an invoice number string by removing harmless delimiters and whitespace.",
+        category="normalization",
+        parameters={
+            "invoice_number": {"type": "string", "description": "Raw invoice number string."}
+        },
+        required_params=["invoice_number"],
+        is_deterministic=True,
+        requires_session=False,
+    ),
+    "tool_calculate_tax_differences": ToolContract(
+        name="tool_calculate_tax_differences",
+        description="Deterministically computes monetary variance between purchase records and GSTR-2B using Decimal math.",
+        category="calculation",
+        parameters={
+            "purchase_taxable": {"type": "number", "description": "Purchase record taxable value."},
+            "purchase_cgst": {"type": "number", "description": "Purchase CGST amount."},
+            "purchase_sgst": {"type": "number", "description": "Purchase SGST amount."},
+            "purchase_igst": {"type": "number", "description": "Purchase IGST amount."},
+            "gstr2b_taxable": {"type": "number", "description": "GSTR-2B taxable value."},
+            "gstr2b_cgst": {"type": "number", "description": "GSTR-2B CGST amount."},
+            "gstr2b_sgst": {"type": "number", "description": "GSTR-2B SGST amount."},
+            "gstr2b_igst": {"type": "number", "description": "GSTR-2B IGST amount."},
+            "tolerance": {"type": "number", "description": "Statutory tolerance in INR (default 1.00)."}
+        },
+        required_params=["purchase_taxable", "purchase_cgst", "purchase_sgst", "purchase_igst", "gstr2b_taxable", "gstr2b_cgst", "gstr2b_sgst", "gstr2b_igst"],
+        is_deterministic=True,
+        requires_session=False,
+    ),
+    "tool_calculate_section_50_interest": ToolContract(
+        name="tool_calculate_section_50_interest",
+        description="Deterministically calculates Section 50 simple interest on delayed tax payment or reversal under CGST Act.",
+        category="calculation",
+        parameters={
+            "principal_tax": {"type": "number", "description": "Principal tax amount in INR at risk."},
+            "delay_days": {"type": "integer", "description": "Number of days of delay."},
+            "annual_rate": {"type": "number", "description": "Annual interest rate (default 0.18 for 18%)."}
+        },
+        required_params=["principal_tax", "delay_days"],
+        is_deterministic=True,
+        requires_session=False,
+    ),
+    "tool_lookup_statutory_rule": ToolContract(
+        name="tool_lookup_statutory_rule",
+        description="Retrieves statutory rule metadata and compliance guidance from the CGST statutory catalog.",
+        category="statutory_lookup",
+        parameters={
+            "rule_id": {"type": "string", "description": "Rule identifier (e.g. RULE_16_2_AA, RULE_37A, RULE_SECTION_50)."}
+        },
+        required_params=["rule_id"],
+        is_deterministic=True,
+        requires_session=False,
+    ),
+    "tool_get_session_summary": ToolContract(
+        name="tool_get_session_summary",
+        description="Retrieves high-level deterministic reconciliation KPIs, counts, and at-risk ITC for a session.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."}
+        },
+        required_params=[],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+    "tool_get_missing_invoices": ToolContract(
+        name="tool_get_missing_invoices",
+        description="Returns all invoices present in internal purchase books but missing from GSTR-2B returns.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."}
+        },
+        required_params=[],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+    "tool_inspect_invoice": ToolContract(
+        name="tool_inspect_invoice",
+        description="Deep drill-down inspection for a specific invoice number in the active reconciliation session.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."},
+            "invoice_number": {"type": "string", "description": "Invoice number to inspect."}
+        },
+        required_params=["invoice_number"],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+    "tool_get_supplier_discrepancies": ToolContract(
+        name="tool_get_supplier_discrepancies",
+        description="Aggregates and ranks counterparty suppliers by total at-risk ITC and missing invoices.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."}
+        },
+        required_params=[],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+    "tool_search_invoices": ToolContract(
+        name="tool_search_invoices",
+        description="Free-text search across invoice numbers, supplier GSTINs, and supplier names in the session.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."},
+            "query": {"type": "string", "description": "Search term (invoice number, GSTIN, or vendor name)."}
+        },
+        required_params=["query"],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+}
+
 TOOL_DEFINITIONS = [
     {
-        "name": "tool_run_reconciliation",
-        "description": "Executes full multi-stage reconciliation between purchase registers and GSTR-2B. Returns exact matches, fuzzy matches, amount variances, missing invoices, and flagged statutory rules.",
+        "name": c.name,
+        "description": c.description,
         "parameters": {
             "type": "object",
-            "properties": {},
-            "required": []
-        }
-    },
-    {
-        "name": "tool_validate_gstin",
-        "description": "Validates 15-character Indian GSTIN structure and Luhn Mod 36 checksum.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "gstin": {"type": "string", "description": "The 15-character GSTIN to validate."}
-            },
-            "required": ["gstin"]
-        }
-    },
-    {
-        "name": "tool_normalize_invoice",
-        "description": "Normalizes invoice number by stripping harmless delimiters and whitespace.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "invoice_number": {"type": "string", "description": "Raw invoice number string."}
-            },
-            "required": ["invoice_number"]
-        }
-    },
-    {
-        "name": "tool_calculate_tax_differences",
-        "description": "Calculates tax differences and validates within statutory tolerance.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "purchase_taxable": {"type": "number"},
-                "purchase_cgst": {"type": "number"},
-                "purchase_sgst": {"type": "number"},
-                "purchase_igst": {"type": "number"},
-                "gstr2b_taxable": {"type": "number"},
-                "gstr2b_cgst": {"type": "number"},
-                "gstr2b_sgst": {"type": "number"},
-                "gstr2b_igst": {"type": "number"}
-            },
-            "required": ["purchase_taxable", "purchase_cgst", "purchase_sgst", "purchase_igst", "gstr2b_taxable", "gstr2b_cgst", "gstr2b_sgst", "gstr2b_igst"]
-        }
-    },
-    {
-        "name": "tool_calculate_section_50_interest",
-        "description": "Deterministically calculates Section 50 interest for delayed tax payment using Decimal math.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "principal_tax": {"type": "number", "description": "The principal tax amount in dispute or delay."},
-                "delay_days": {"type": "integer", "description": "Number of days of delay."},
-                "annual_rate": {"type": "number", "description": "Annual interest rate (default 0.18 for 18%)."}
-            },
-            "required": ["principal_tax", "delay_days"]
-        }
-    },
-    {
-        "name": "tool_lookup_statutory_rule",
-        "description": "Retrieves statutory rule metadata and review guidance from statutory catalog.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "rule_id": {"type": "string", "description": "Rule identifier (e.g. RULE_16_2_AA, RULE_37A, RULE_AMOUNT_MISMATCH)."}
-            },
-            "required": ["rule_id"]
+            "properties": c.parameters,
+            "required": c.required_params
         }
     }
+    for c in TOOL_CONTRACTS.values()
 ]
+
+def validate_and_call_tool(
+    tool_name: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+    step_index: int = 1,
+) -> Dict[str, Any]:
+    """
+    Phase 3 Authoritative Tool Validation and Execution Adapter:
+    1. Verifies tool exists in registered AVAILABLE_TOOLS.
+    2. Enforces session_id if requires_session is True.
+    3. Validates required parameters against ToolContract.
+    4. Rejects unsafe arguments, prevents arbitrary execution, executes only registered Python functions.
+    5. Measures execution duration (ms) and creates concise operational summary.
+    """
+    args = dict(arguments or {})
+    start_time = time.perf_counter()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if tool_name not in AVAILABLE_TOOLS:
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        return {
+            "success": False,
+            "status": "ERROR",
+            "step_index": step_index,
+            "tool_name": tool_name,
+            "tool_input": args,
+            "data": None,
+            "observation_summary": f"Rejected: Tool '{tool_name}' is not in the registered tool catalog.",
+            "duration_ms": duration_ms,
+            "timestamp": now_iso,
+            "error": f"Tool '{tool_name}' not found."
+        }
+
+    contract = TOOL_CONTRACTS.get(tool_name)
+    if not contract:
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        return {
+            "success": False,
+            "status": "ERROR",
+            "step_index": step_index,
+            "tool_name": tool_name,
+            "tool_input": args,
+            "data": None,
+            "observation_summary": f"Rejected: Tool '{tool_name}' has no registered contract.",
+            "duration_ms": duration_ms,
+            "timestamp": now_iso,
+            "error": f"Tool contract missing for '{tool_name}'."
+        }
+
+    # Session ID enforcement
+    effective_session_id = session_id or args.get("session_id")
+    if contract.requires_session:
+        if not effective_session_id:
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            return {
+                "success": False,
+                "status": "ERROR",
+                "step_index": step_index,
+                "tool_name": tool_name,
+                "tool_input": args,
+                "data": None,
+                "observation_summary": f"Rejected: Tool '{tool_name}' requires an active session_id.",
+                "duration_ms": duration_ms,
+                "timestamp": now_iso,
+                "error": f"Session ID required for tool '{tool_name}'."
+            }
+        args["session_id"] = effective_session_id
+
+    # Validate required parameters
+    for req in contract.required_params:
+        if req not in args or args[req] is None or (isinstance(args[req], str) and not args[req].strip()):
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            return {
+                "success": False,
+                "status": "ERROR",
+                "step_index": step_index,
+                "tool_name": tool_name,
+                "tool_input": args,
+                "data": None,
+                "observation_summary": f"Rejected: Missing required parameter '{req}' for tool '{tool_name}'.",
+                "duration_ms": duration_ms,
+                "timestamp": now_iso,
+                "error": f"Missing required parameter '{req}'."
+            }
+
+    # Execute deterministic Python function
+    fn = AVAILABLE_TOOLS[tool_name]
+    try:
+        # Pass only parameters accepted by fn
+        import inspect
+        sig = inspect.signature(fn)
+        fn_params = set(sig.parameters.keys())
+        filtered_args = {k: v for k, v in args.items() if k in fn_params}
+
+        # Type conversion safeguards
+        if "principal_tax" in filtered_args:
+            filtered_args["principal_tax"] = float(filtered_args["principal_tax"])
+        if "delay_days" in filtered_args:
+            filtered_args["delay_days"] = int(filtered_args["delay_days"])
+        if "annual_rate" in filtered_args:
+            filtered_args["annual_rate"] = float(filtered_args["annual_rate"])
+        for k in ["purchase_taxable", "purchase_cgst", "purchase_sgst", "purchase_igst", "gstr2b_taxable", "gstr2b_cgst", "gstr2b_sgst", "gstr2b_igst"]:
+            if k in filtered_args:
+                filtered_args[k] = float(filtered_args[k])
+
+        result = fn(**filtered_args)
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        # Build concise operational summary
+        summary = _build_observation_summary(tool_name, filtered_args, result)
+
+        return {
+            "success": True,
+            "status": "SUCCESS",
+            "step_index": step_index,
+            "tool_name": tool_name,
+            "tool_input": filtered_args,
+            "data": result,
+            "observation_summary": summary,
+            "duration_ms": duration_ms,
+            "timestamp": now_iso,
+            "error": None
+        }
+    except Exception as e:
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        return {
+            "success": False,
+            "status": "ERROR",
+            "step_index": step_index,
+            "tool_name": tool_name,
+            "tool_input": args,
+            "data": None,
+            "observation_summary": f"Failed: Execution of '{tool_name}' raised {type(e).__name__}: {str(e)}.",
+            "duration_ms": duration_ms,
+            "timestamp": now_iso,
+            "error": str(e)
+        }
+
+def _build_observation_summary(tool_name: str, args: Dict[str, Any], result: Any) -> str:
+    """Builds a concise operational summary without exposing internal chain of thought."""
+    if tool_name == "tool_get_session_summary":
+        if isinstance(result, dict) and result.get("found"):
+            return f"Retrieved session summary: {result.get('total_purchase_invoices', 0)} purchase vs {result.get('total_2b_invoices', 0)} 2B records, ₹{result.get('total_at_risk_itc', 0):,.2f} at-risk ITC."
+        return "Session summary not found."
+
+    if tool_name == "tool_get_missing_invoices":
+        count = len(result) if isinstance(result, list) else 0
+        total_risk = sum(r.get("at_risk_itc", 0) for r in result) if isinstance(result, list) else 0
+        return f"Located {count} missing in GSTR-2B invoice(s) representing ₹{total_risk:,.2f} at-risk ITC."
+
+    if tool_name == "tool_inspect_invoice":
+        if isinstance(result, dict) and result.get("found"):
+            return f"Inspected invoice {result.get('invoice_number')}: status={result.get('status')}, tax variance=₹{result.get('tax_difference', 0):,.2f}."
+        inv = args.get("invoice_number", "")
+        return f"Invoice '{inv}' not found in active session records."
+
+    if tool_name == "tool_get_supplier_discrepancies":
+        count = len(result) if isinstance(result, list) else 0
+        discrepant = [s for s in result if s.get("total_at_risk_itc", 0) > 0] if isinstance(result, list) else []
+        top = discrepant[0]["supplier_name"] if discrepant else "None"
+        return f"Analyzed {count} counterparty suppliers ({len(discrepant)} with discrepancies). Highest risk: {top}."
+
+    if tool_name == "tool_search_invoices":
+        count = len(result) if isinstance(result, list) else 0
+        q = args.get("query", "")
+        return f"Search for '{q}' returned {count} matching invoice record(s)."
+
+    if tool_name == "tool_calculate_tax_differences":
+        diff = result.get("total_tax_diff", 0.0) if isinstance(result, dict) else 0.0
+        tol = result.get("is_within_tolerance", True) if isinstance(result, dict) else True
+        return f"Calculated tax variance: ₹{diff:,.2f} (within statutory tolerance: {tol})."
+
+    if tool_name == "tool_calculate_section_50_interest":
+        interest = result.get("calculated_interest", 0.0) if isinstance(result, dict) else 0.0
+        rate = result.get("annual_rate", 0.18) if isinstance(result, dict) else 0.18
+        days = result.get("delay_days", 0) if isinstance(result, dict) else 0
+        return f"Computed Section 50 simple interest @ {rate*100:.0f}% p.a. for {days} days: ₹{interest:,.2f}."
+
+    if tool_name == "tool_lookup_statutory_rule":
+        if isinstance(result, dict) and "statutory_reference" in result:
+            return f"Retrieved statutory citation: {result.get('statutory_reference')}."
+        return f"Looked up rule {args.get('rule_id')}."
+
+    if tool_name == "tool_validate_gstin":
+        valid = result.get("is_valid", False) if isinstance(result, dict) else False
+        return f"Validated GSTIN {args.get('gstin')}: checksum valid = {valid}."
+
+    if tool_name == "tool_normalize_invoice":
+        norm = result.get("normalized", "") if isinstance(result, dict) else ""
+        return f"Normalized invoice number '{args.get('invoice_number')}' to '{norm}'."
+
+    if tool_name == "tool_run_reconciliation":
+        return "Executed deterministic reconciliation engine across active datasets."
+
+    return f"Completed tool '{tool_name}' successfully."

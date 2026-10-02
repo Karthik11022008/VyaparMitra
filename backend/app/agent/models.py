@@ -67,7 +67,20 @@ class AgentAnalyzeResponse(BaseModel):
         "All supplier communications require human review and approval."
     )
 
-# --- Phase 2 Conversational Investigation Models ---
+# --- Phase 2 & 3 Conversational & Agentic Investigation Models ---
+
+class AgentStepTrace(BaseModel):
+    step_index: int
+    tool_name: str
+    tool_input: Dict[str, Any] = Field(default_factory=dict)
+    observation_summary: str
+    duration_ms: float = 0.0
+    timestamp: str = ""
+    status: str = "success"
+
+class ToolCallRequest(BaseModel):
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
 
 class AgentInvestigateRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Conversational query regarding reconciliation session")
@@ -90,6 +103,8 @@ class AgentInvestigateResponse(BaseModel):
     session_id: str
     user_question: str
     intent: str
+    plan: List[str] = Field(default_factory=list)
+    steps_executed: List[AgentStepTrace] = Field(default_factory=list)
     answer: str
     evidence: List[AgentEvidenceItem] = Field(default_factory=list)
     tools_used: List[str] = Field(default_factory=list)
