@@ -18,6 +18,11 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
         "supplier_tin", "gstin/uin of supplier", "gstin/uin", "seller_gstin", "ctin",
         "supplier gstin/uin"
     ],
+    "supplier_name": [
+        "supplier_name", "supplier name", "trade_name", "trade name", "legal_name",
+        "legal name", "vendor_name", "vendor name", "party_name", "party name",
+        "supplier", "vendor", "name", "party", "trdnm", "lgnm"
+    ],
     "invoice_number": [
         "invoice_number", "invoice no", "invoice_no", "invoice number", "inv_no",
         "inv no", "inv_num", "bill_no", "bill no", "document_number", "document no",
@@ -116,6 +121,7 @@ def flatten_gstr2b_json(data: Any) -> List[Dict[str, Any]]:
         if "b2b" in data and isinstance(data["b2b"], list):
             for supplier in data["b2b"]:
                 ctin = supplier.get("ctin") or supplier.get("supplier_gstin") or ""
+                sup_name = supplier.get("trdnm") or supplier.get("lgnm") or supplier.get("supplier_name") or ""
                 inv_list = supplier.get("inv") or supplier.get("invoices") or []
                 for inv in inv_list:
                     inum = inv.get("inum") or inv.get("invoice_number") or ""
@@ -143,6 +149,7 @@ def flatten_gstr2b_json(data: Any) -> List[Dict[str, Any]]:
 
                     rows.append({
                         "supplier_gstin": ctin,
+                        "supplier_name": sup_name,
                         "invoice_number": inum,
                         "invoice_date": idt,
                         "taxable_value": float(txval_sum),
@@ -305,6 +312,7 @@ def parse_and_validate_file(
         inv_no_raw = str(row[col_map["invoice_number"]]).strip()
         date_raw = str(row[col_map["invoice_date"]]).strip() if "invoice_date" in col_map else ""
         period_raw = str(row[col_map["tax_period"]]).strip() if "tax_period" in col_map else ""
+        name_raw = str(row[col_map["supplier_name"]]).strip() if "supplier_name" in col_map and str(row[col_map["supplier_name"]]).strip().lower() not in ("nan", "none", "") else ""
 
         if not gstin_raw or gstin_raw.lower() in ("nan", "none", ""):
             validation_errors.append(f"Row {row_num}: Supplier GSTIN is missing.")
@@ -335,6 +343,7 @@ def parse_and_validate_file(
 
         preview_data = {
             "supplier_gstin": gstin_raw,
+            "supplier_name": name_raw,
             "invoice_number": inv_no_raw,
             "invoice_date": date_raw,
             "taxable_value": str(taxable_val),
@@ -359,7 +368,8 @@ def parse_and_validate_file(
                     sgst=sgst_val,
                     igst=igst_val,
                     total_value=total_val,
-                    tax_period=period_raw
+                    tax_period=period_raw,
+                    supplier_name=name_raw,
                 )
             )
         else:
@@ -372,7 +382,8 @@ def parse_and_validate_file(
                     cgst=cgst_val,
                     sgst=sgst_val,
                     igst=igst_val,
-                    tax_period=period_raw
+                    tax_period=period_raw,
+                    supplier_name=name_raw,
                 )
             )
 

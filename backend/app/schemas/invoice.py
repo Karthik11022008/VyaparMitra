@@ -22,6 +22,7 @@ class PurchaseInvoice(BaseModel):
     igst: Decimal = Field(default=Decimal("0.00"), ge=0)
     total_value: Decimal = Field(default=Decimal("0.00"), ge=0)
     tax_period: str = Field(default="")
+    supplier_name: Optional[str] = Field(default="")
 
     @field_validator("taxable_value", "cgst", "sgst", "igst", "total_value", mode="before")
     @classmethod
@@ -43,6 +44,7 @@ class GSTR2BInvoice(BaseModel):
     sgst: Decimal = Field(default=Decimal("0.00"), ge=0)
     igst: Decimal = Field(default=Decimal("0.00"), ge=0)
     tax_period: str = Field(default="")
+    supplier_name: Optional[str] = Field(default="")
 
     @field_validator("taxable_value", "cgst", "sgst", "igst", mode="before")
     @classmethod
@@ -65,6 +67,19 @@ class ReconciliationResult(BaseModel):
     reason: str
     rules_flagged: List[str] = Field(default_factory=list)
 
+class SupplierSummary(BaseModel):
+    supplier_gstin: str
+    supplier_name: str = ""
+    total_invoices: int = 0
+    exact_matches: int = 0
+    fuzzy_matches: int = 0
+    amount_mismatches: int = 0
+    missing_in_2b: int = 0
+    missing_in_purchase_register: int = 0
+    total_at_risk_itc: Decimal = Decimal("0.00")
+    total_taxable_value: Decimal = Decimal("0.00")
+    total_tax: Decimal = Decimal("0.00")
+
 class ReconciliationSummary(BaseModel):
     total_purchase_invoices: int = 0
     total_2b_invoices: int = 0
@@ -85,3 +100,4 @@ class ReconciliationResponse(BaseModel):
     summary: ReconciliationSummary
     detailed_results: List[ReconciliationResult]
     session_id: Optional[str] = None
+    supplier_summaries: List[SupplierSummary] = Field(default_factory=list)

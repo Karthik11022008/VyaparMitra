@@ -12,11 +12,21 @@ from backend.app.schemas.invoice import (
     ReconciliationResult,
     ReconciliationSummary,
     ReconciliationResponse,
+    SupplierSummary,
     MatchStatus,
 )
 from backend.app.tools.matching_engine import InvoiceMatchingEngine
 from backend.app.config import BASE_DIR
 from backend.app.database import save_or_update_session, get_reconciliation_session, log_audit_event
+
+# Deterministic demo supplier directory for consistent human-readable naming
+DEMO_SUPPLIER_NAMES: Dict[str, str] = {
+    "27AAPFU0939F1ZV": "Acme Industrial Components Ltd",
+    "29AABCU9603R1ZJ": "Silicon Valley Solutions Pvt Ltd",
+    "07AAAAA0000A1Z4": "Delhi Logistical Network",
+    "06AAACB1234F1ZD": "Haryana Heavy Fabrication",
+    "99INVALID1234ZZZ": "Unverified Supplier Entity",
+}
 
 # In-memory session cache for fast access to active uploaded datasets
 SESSION_DATA_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -46,9 +56,11 @@ def parse_purchase_csv(content: Union[str, Path, io.StringIO]) -> List[PurchaseI
     for row in reader:
         if not row or not any(row.values()):
             continue
+        gstin = row.get("supplier_gstin", "").strip()
+        sup_name = row.get("supplier_name", "").strip() or DEMO_SUPPLIER_NAMES.get(gstin, "")
         invoices.append(
             PurchaseInvoice(
-                supplier_gstin=row.get("supplier_gstin", "").strip(),
+                supplier_gstin=gstin,
                 invoice_number=row.get("invoice_number", "").strip(),
                 invoice_date=row.get("invoice_date", "").strip(),
                 taxable_value=Decimal(str(row.get("taxable_value", "0")).strip()),
@@ -57,6 +69,7 @@ def parse_purchase_csv(content: Union[str, Path, io.StringIO]) -> List[PurchaseI
                 igst=Decimal(str(row.get("igst", "0")).strip() or "0"),
                 total_value=Decimal(str(row.get("total_value", "0")).strip() or "0"),
                 tax_period=row.get("tax_period", "").strip(),
+                supplier_name=sup_name,
             )
         )
     return invoices
@@ -75,9 +88,11 @@ def parse_gstr2b_csv(content: Union[str, Path, io.StringIO]) -> List[GSTR2BInvoi
     for row in reader:
         if not row or not any(row.values()):
             continue
+        gstin = row.get("supplier_gstin", "").strip()
+        sup_name = row.get("supplier_name", "").strip() or DEMO_SUPPLIER_NAMES.get(gstin, "")
         invoices.append(
             GSTR2BInvoice(
-                supplier_gstin=row.get("supplier_gstin", "").strip(),
+                supplier_gstin=gstin,
                 invoice_number=row.get("invoice_number", "").strip(),
                 invoice_date=row.get("invoice_date", "").strip(),
                 taxable_value=Decimal(str(row.get("taxable_value", "0")).strip()),
@@ -85,6 +100,7 @@ def parse_gstr2b_csv(content: Union[str, Path, io.StringIO]) -> List[GSTR2BInvoi
                 sgst=Decimal(str(row.get("sgst", "0")).strip() or "0"),
                 igst=Decimal(str(row.get("igst", "0")).strip() or "0"),
                 tax_period=row.get("tax_period", "").strip(),
+                supplier_name=sup_name,
             )
         )
     return invoices
@@ -150,6 +166,85 @@ def build_summary(
         total_at_risk_itc=round(total_at_risk_itc, 2),
     )
 
+def build_supplier_summaries(results: List[ReconciliationResult]) -> List[SupplierSummary]:
+    """
+    Computes deterministic supplier-wise risk and reconciliation intelligence.
+    Zero LLM involvement - 100% deterministic arithmetic aggregation.
+    """
+    suppliers_map: Dict[str, Dict[str, Any]] = {}
+
+    for item in results:
+        p_inv = item.purchase_invoice
+        b_inv = item.matched_2b_invoice
+        gstin = p_inv.supplier_gstin if p_inv else (b_inv.supplier_gstin if b_inv else "UNKNOWN")
+        name = (p_inv.supplier_name if p_inv and p_inv.supplier_name else (b_inv.supplier_name if b_inv and b_inv.supplier_name else ""))
+        if not name:
+            name = DEMO_SUPPLIER_NAMES.get(gstin, f"Vendor {gstin[:8]}...")
+
+        if gstin not in suppliers_map:
+            suppliers_map[gstin] = {
+                "supplier_gstin": gstin,
+                "supplier_name": name,
+                "total_invoices": 0,
+                "exact_matches": 0,
+                "fuzzy_matches": 0,
+                "amount_mismatches": 0,
+                "missing_in_2b": 0,
+                "missing_in_purchase_register": 0,
+                "total_at_risk_itc": Decimal("0.00"),
+                "total_taxable_value": Decimal("0.00"),
+                "total_tax": Decimal("0.00"),
+            }
+
+        s = suppliers_map[gstin]
+        s["total_invoices"] += 1
+
+        if item.status == MatchStatus.EXACT_MATCH:
+            s["exact_matches"] += 1
+        elif item.status == MatchStatus.FUZZY_MATCH_REQUIRES_REVIEW:
+            s["fuzzy_matches"] += 1
+            if item.tax_difference > 0:
+                s["total_at_risk_itc"] += item.tax_difference
+        elif item.status == MatchStatus.AMOUNT_MISMATCH:
+            s["amount_mismatches"] += 1
+            if item.tax_difference > 0:
+                s["total_at_risk_itc"] += item.tax_difference
+        elif item.status == MatchStatus.MISSING_IN_2B:
+            s["missing_in_2b"] += 1
+            if p_inv:
+                s["total_at_risk_itc"] += p_inv.total_tax
+        elif item.status == MatchStatus.MISSING_IN_PURCHASE_REGISTER:
+            s["missing_in_purchase_register"] += 1
+        elif item.status in (MatchStatus.DUPLICATE_CANDIDATE, MatchStatus.INVALID_DATA):
+            if p_inv:
+                s["total_at_risk_itc"] += p_inv.total_tax
+
+        if p_inv:
+            s["total_taxable_value"] += p_inv.taxable_value
+            s["total_tax"] += p_inv.total_tax
+        elif b_inv:
+            s["total_taxable_value"] += b_inv.taxable_value
+            s["total_tax"] += b_inv.total_tax
+
+    summaries = [
+        SupplierSummary(
+            supplier_gstin=v["supplier_gstin"],
+            supplier_name=v["supplier_name"],
+            total_invoices=v["total_invoices"],
+            exact_matches=v["exact_matches"],
+            fuzzy_matches=v["fuzzy_matches"],
+            amount_mismatches=v["amount_mismatches"],
+            missing_in_2b=v["missing_in_2b"],
+            missing_in_purchase_register=v["missing_in_purchase_register"],
+            total_at_risk_itc=round(v["total_at_risk_itc"], 2),
+            total_taxable_value=round(v["total_taxable_value"], 2),
+            total_tax=round(v["total_tax"], 2),
+        )
+        for v in suppliers_map.values()
+    ]
+    summaries.sort(key=lambda x: (x.total_at_risk_itc, x.total_invoices), reverse=True)
+    return summaries
+
 def run_reconciliation(
     purchase_invoices: List[PurchaseInvoice],
     gstr2b_invoices: List[GSTR2BInvoice],
@@ -158,10 +253,12 @@ def run_reconciliation(
     engine = InvoiceMatchingEngine()
     detailed_results = engine.reconcile(purchase_invoices, gstr2b_invoices)
     summary = build_summary(detailed_results, purchase_invoices, gstr2b_invoices)
+    supplier_summaries = build_supplier_summaries(detailed_results)
     return ReconciliationResponse(
         status="success",
         summary=summary,
         detailed_results=detailed_results,
+        supplier_summaries=supplier_summaries,
     )
 
 def reconcile_demo_dataset(session_id: Optional[str] = None) -> ReconciliationResponse:
@@ -216,6 +313,52 @@ def reconcile_demo_dataset(session_id: Optional[str] = None) -> ReconciliationRe
 
     return response
 
+def restore_session_from_db(session_id: str) -> Optional[ReconciliationResponse]:
+    """Recovers a reconciliation session from SQLite into cache if available."""
+    cache = get_session_cache(session_id)
+    if cache.get("reconciliation_response"):
+        return cache["reconciliation_response"]
+
+    session_info = get_reconciliation_session(session_id)
+    if not session_info:
+        return None
+
+    summary_str = session_info.get("summary_json")
+    results_str = session_info.get("results_json")
+    supplier_str = session_info.get("supplier_summary_json")
+
+    if summary_str and results_str:
+        try:
+            summary_data = json.loads(summary_str)
+            results_data = json.loads(results_str)
+            supplier_data = json.loads(supplier_str) if supplier_str else []
+
+            results = [ReconciliationResult(**r) for r in results_data]
+            suppliers = [SupplierSummary(**s) for s in supplier_data] if supplier_data else build_supplier_summaries(results)
+
+            response = ReconciliationResponse(
+                status="success",
+                summary=ReconciliationSummary(**summary_data),
+                detailed_results=results,
+                session_id=session_id,
+                supplier_summaries=suppliers,
+            )
+            cache["reconciliation_response"] = response
+            cache["purchase_filename"] = session_info.get("purchase_filename", "")
+            cache["gstr2b_filename"] = session_info.get("gstr2b_filename", "")
+            return response
+        except Exception:
+            pass
+
+    # If demo session, re-reconcile demo dataset
+    if session_id == "demo-session" or session_id.startswith("sess-demo"):
+        try:
+            return reconcile_demo_dataset(session_id=session_id)
+        except Exception:
+            pass
+
+    return None
+
 def reconcile_session(session_id: str) -> ReconciliationResponse:
     """Reconciles the uploaded datasets stored under a session ID."""
     cache = get_session_cache(session_id)
@@ -260,12 +403,16 @@ def reconcile_session(session_id: str) -> ReconciliationResponse:
     response.session_id = session_id
     cache["reconciliation_response"] = response
 
-    # Persist summary in DB
+    # Persist summary & results in DB for session recovery
     summary_dict = response.summary.model_dump(mode="json")
+    results_json = json.dumps([r.model_dump(mode="json") for r in response.detailed_results])
+    supplier_json = json.dumps([s.model_dump(mode="json") for s in response.supplier_summaries])
     save_or_update_session(
         session_id=session_id,
         status="RECONCILED",
-        summary_json=json.dumps(summary_dict)
+        summary_json=json.dumps(summary_dict),
+        results_json=results_json,
+        supplier_summary_json=supplier_json,
     )
 
     log_audit_event(

@@ -15,6 +15,7 @@ from backend.app.services.reconciliation_service import (
     get_session_cache,
     generate_csv_report,
     generate_html_report,
+    restore_session_from_db,
 )
 from backend.app.services.file_parser import parse_and_validate_file
 from backend.app.database import (
@@ -22,6 +23,7 @@ from backend.app.database import (
     get_reconciliation_session,
     log_audit_event,
     get_audit_events,
+    get_reconciliation_history,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,6 +226,15 @@ async def run_uploaded_reconciliation(req: RunReconciliationRequest):
             detail="An error occurred while executing reconciliation for the uploaded dataset."
         )
 
+@router.get("/history")
+async def list_reconciliation_history(limit: int = 50):
+    """Retrieves previous reconciliation sessions for recovery and audit examination."""
+    sessions = get_reconciliation_history(limit=limit)
+    return {
+        "count": len(sessions),
+        "sessions": sessions
+    }
+
 @router.get("/session/{session_id}")
 async def get_session_info(session_id: str):
     """Retrieves session metadata, filenames, row counts, and current status."""
@@ -232,25 +243,53 @@ async def get_session_info(session_id: str):
         raise HTTPException(status_code=404, detail="Reconciliation session not found.")
     return info
 
+@router.get("/session/{session_id}/results", response_model=ReconciliationResponse)
+async def get_session_reconciliation_results(session_id: str):
+    """Retrieves full reconciliation results and supplier summaries, restoring from SQLite if needed."""
+    cache = get_session_cache(session_id)
+    response = cache.get("reconciliation_response")
+    if not response:
+        response = restore_session_from_db(session_id)
+    if not response:
+        raise HTTPException(
+            status_code=404,
+            detail="Reconciliation has not been executed or saved for this session."
+        )
+    return response
+
+@router.get("/session/{session_id}/suppliers")
+async def get_session_supplier_summaries(session_id: str):
+    """Retrieves deterministic supplier-wise risk and invoice breakdown for the session."""
+    cache = get_session_cache(session_id)
+    response = cache.get("reconciliation_response")
+    if not response:
+        response = restore_session_from_db(session_id)
+    if not response:
+        raise HTTPException(
+            status_code=404,
+            detail="Reconciliation has not been executed or saved for this session."
+        )
+    return {
+        "session_id": session_id,
+        "supplier_count": len(response.supplier_summaries),
+        "suppliers": [s.model_dump(mode="json") for s in response.supplier_summaries]
+    }
+
 @router.get("/export/{session_id}/csv")
 async def export_reconciliation_csv(session_id: str):
     """Exports reconciliation results as an audit-friendly CSV document."""
     cache = get_session_cache(session_id)
     response = cache.get("reconciliation_response")
     if not response:
-        if session_id == "demo-session" or session_id.startswith("sess-demo"):
-            try:
-                response = reconcile_demo_dataset(session_id=session_id)
-            except Exception:
-                pass
-        if not response:
-            try:
-                response = reconcile_session(session_id)
-            except Exception:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Reconciliation has not been executed for this session yet."
-                )
+        response = restore_session_from_db(session_id)
+    if not response:
+        try:
+            response = reconcile_session(session_id)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Reconciliation has not been executed for this session yet."
+            )
 
     csv_data = generate_csv_report(response, session_id)
     return Response(
@@ -265,19 +304,15 @@ async def export_reconciliation_html(session_id: str):
     cache = get_session_cache(session_id)
     response = cache.get("reconciliation_response")
     if not response:
-        if session_id == "demo-session" or session_id.startswith("sess-demo"):
-            try:
-                response = reconcile_demo_dataset(session_id=session_id)
-            except Exception:
-                pass
-        if not response:
-            try:
-                response = reconcile_session(session_id)
-            except Exception:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Reconciliation has not been executed for this session yet."
-                )
+        response = restore_session_from_db(session_id)
+    if not response:
+        try:
+            response = reconcile_session(session_id)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Reconciliation has not been executed for this session yet."
+            )
 
     metadata = {
         "purchase_filename": cache.get("purchase_filename"),

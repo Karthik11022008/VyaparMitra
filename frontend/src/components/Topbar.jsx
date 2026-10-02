@@ -18,6 +18,7 @@ export const Topbar = ({
     overview: 'Command Center & Executive Intelligence',
     ingestion: 'File Ingestion & Ledger Validation',
     reconciliation: 'Audit Ledger & Variance Investigation',
+    suppliers: 'Supplier Intelligence & Counterparty Risk',
     agent: 'AI Copilot & Dispute Draft Workspace',
     audit: 'Immutable Compliance Audit Trail',
     reports: 'Certified Reconciliation & Export Suite'

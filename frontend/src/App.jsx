@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import './App.css'
 import { Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
@@ -18,6 +18,12 @@ import {
   IconEye,
   IconArrowRight,
   IconRefresh,
+  IconSearch,
+  IconFilter,
+  IconX,
+  IconUsers,
+  IconBuilding,
+  IconHistory,
 } from './components/Icons'
 
 function App() {
@@ -77,6 +83,22 @@ function App() {
   const [reconResult, setReconResult] = useState(null)
   const [findingsFilter, setFindingsFilter] = useState('ALL')
 
+  // Phase 1 Search, Filtering & Sorting State
+  const [searchQuery, setSearchQuery] = useState('')
+  const [riskFilter, setRiskFilter] = useState('ALL') // ALL, AT_RISK, ZERO_RISK
+  const [sortBy, setSortBy] = useState('atRisk') // atRisk, invoiceNumber, supplier, variance
+  const [sortOrder, setSortOrder] = useState('desc') // desc, asc
+  const [reconSubView, setReconSubView] = useState('invoices') // invoices, suppliers
+
+  // Phase 1 Supplier Intelligence Workspace State
+  const [supplierSearchQuery, setSupplierSearchQuery] = useState('')
+  const [supplierSortBy, setSupplierSortBy] = useState('atRisk') // atRisk, invoices, name, missing
+  const [supplierSortOrder, setSupplierSortOrder] = useState('desc') // desc, asc
+
+  // Phase 1 Session History & Recovery State
+  const [sessionHistory, setSessionHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
   // Slide-over Evidence Drawer
   const [inspectingItem, setInspectingItem] = useState(null)
   const [isSlideOverOpen, setIsSlideOverOpen] = useState(false)
@@ -126,6 +148,43 @@ function App() {
       }
     } catch (e) {
       console.warn('Failed to load audit trail:', e)
+    }
+  }
+
+  // Phase 1: Fetch Historical Reconciliation Sessions from SQLite
+  const fetchSessionHistory = async () => {
+    setHistoryLoading(true)
+    try {
+      const res = await fetch('http://localhost:8000/api/reconciliation/history')
+      if (res.ok) {
+        const data = await res.json()
+        setSessionHistory(data.sessions || [])
+      }
+    } catch (e) {
+      console.warn('Failed to fetch session history:', e)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  // Phase 1: Restore a Historical Session from SQLite
+  const loadHistoricalSession = async (targetSessionId) => {
+    if (!targetSessionId) return
+    setReconLoading(true)
+    setReconError(null)
+    try {
+      const res = await fetch(`http://localhost:8000/api/reconciliation/session/${targetSessionId}/results`)
+      if (!res.ok) throw new Error(`Could not restore session ${targetSessionId}`)
+      const data = await res.json()
+      setReconResult(data)
+      setSessionId(targetSessionId)
+      fetchAuditTrail(targetSessionId)
+      fetchSessionHistory()
+      setActiveTab('reconciliation')
+    } catch (e) {
+      setReconError(e.message)
+    } finally {
+      setReconLoading(false)
     }
   }
 
@@ -203,6 +262,7 @@ function App() {
       if (!res.ok) throw new Error(data.detail || 'Reconciliation failed')
       setReconResult(data)
       fetchAuditTrail(sessionId)
+      fetchSessionHistory()
       setActiveTab('reconciliation')
     } catch (err) {
       setReconError(err.message)
@@ -227,6 +287,7 @@ function App() {
       const sid = data.session_id || 'demo-session'
       setSessionId(sid)
       fetchAuditTrail(sid)
+      fetchSessionHistory()
       setActiveTab('reconciliation')
     } catch (err) {
       setReconError(err.message)
@@ -347,6 +408,7 @@ function App() {
 
   useEffect(() => {
     checkHealth()
+    fetchSessionHistory()
   }, [])
 
   // Metrics calculation
@@ -364,16 +426,123 @@ function App() {
     ? ((exactMatches / summary.total_purchase_invoices) * 100).toFixed(0)
     : 0
 
-  // Filtered detailed results
-  const filteredResults = (reconResult?.detailed_results || []).filter(item => {
-    if (findingsFilter === 'ALL') return true
-    if (findingsFilter === 'MATCHED') return item.status === 'EXACT_MATCH'
-    if (findingsFilter === 'REVIEW') return item.status === 'FUZZY_MATCH_REQUIRES_REVIEW'
-    if (findingsFilter === 'MISMATCH') return item.status === 'AMOUNT_MISMATCH'
-    if (findingsFilter === 'MISSING') return item.status === 'MISSING_IN_2B' || item.status === 'MISSING_IN_PURCHASE_REGISTER'
-    if (findingsFilter === 'INVALID') return item.status === 'INVALID_DATA' || item.status === 'DUPLICATE_CANDIDATE'
-    return true
-  })
+  // Phase 1 Reset Controls
+  const handleResetFilters = () => {
+    setSearchQuery('')
+    setFindingsFilter('ALL')
+    setRiskFilter('ALL')
+    setSortBy('atRisk')
+    setSortOrder('desc')
+  }
+
+  // Phase 1: Filtered and Sorted Detailed Invoices (Instant Search + Match Status + Risk Type + Multi-column Sort)
+  const filteredResults = useMemo(() => {
+    let list = reconResult?.detailed_results || []
+
+    // 1. Match status category filter (Chips)
+    if (findingsFilter !== 'ALL') {
+      list = list.filter(item => {
+        if (findingsFilter === 'MATCHED') return item.status === 'EXACT_MATCH'
+        if (findingsFilter === 'REVIEW') return item.status === 'FUZZY_MATCH_REQUIRES_REVIEW'
+        if (findingsFilter === 'MISMATCH') return item.status === 'AMOUNT_MISMATCH'
+        if (findingsFilter === 'MISSING') return item.status === 'MISSING_IN_2B' || item.status === 'MISSING_IN_PURCHASE_REGISTER'
+        if (findingsFilter === 'INVALID') return item.status === 'INVALID_DATA' || item.status === 'DUPLICATE_CANDIDATE'
+        return true
+      })
+    }
+
+    // 2. Risk / Discrepancy Type filter
+    if (riskFilter === 'AT_RISK') {
+      list = list.filter(item => {
+        const diff = Number(item.tax_difference || 0)
+        const pVal = item.purchase_invoice ? Number(item.purchase_invoice.total_tax) : 0
+        const atRisk = diff > 0 ? diff : (item.status === 'MISSING_IN_2B' || item.status === 'INVALID_DATA' || item.status === 'DUPLICATE_CANDIDATE' ? pVal : 0)
+        return atRisk > 0
+      })
+    } else if (riskFilter === 'ZERO_RISK') {
+      list = list.filter(item => {
+        const diff = Number(item.tax_difference || 0)
+        return diff === 0 && item.status === 'EXACT_MATCH'
+      })
+    }
+
+    // 3. Instant Search: case-insensitive across invoice_number, supplier_gstin, supplier_name
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim()
+      list = list.filter(item => {
+        const pInv = item.purchase_invoice
+        const bInv = item.matched_2b_invoice
+        const invNum = (pInv?.invoice_number || bInv?.invoice_number || '').toLowerCase()
+        const gstin = (pInv?.supplier_gstin || bInv?.supplier_gstin || '').toLowerCase()
+        const name = (pInv?.supplier_name || bInv?.supplier_name || '').toLowerCase()
+        return invNum.includes(q) || gstin.includes(q) || name.includes(q)
+      })
+    }
+
+    // 4. Sorting
+    list = [...list].sort((a, b) => {
+      let comp = 0
+      const pA = a.purchase_invoice
+      const bA = a.matched_2b_invoice
+      const pB = b.purchase_invoice
+      const bB = b.matched_2b_invoice
+
+      if (sortBy === 'atRisk') {
+        const diffA = Number(a.tax_difference || 0)
+        const valA = pA ? Number(pA.total_tax) : 0
+        const atRiskA = diffA > 0 ? diffA : (a.status === 'MISSING_IN_2B' || a.status === 'INVALID_DATA' || a.status === 'DUPLICATE_CANDIDATE' ? valA : 0)
+
+        const diffB = Number(b.tax_difference || 0)
+        const valB = pB ? Number(pB.total_tax) : 0
+        const atRiskB = diffB > 0 ? diffB : (b.status === 'MISSING_IN_2B' || b.status === 'INVALID_DATA' || b.status === 'DUPLICATE_CANDIDATE' ? valB : 0)
+
+        comp = atRiskA - atRiskB
+      } else if (sortBy === 'invoiceNumber') {
+        const numA = (pA?.invoice_number || bA?.invoice_number || '').toLowerCase()
+        const numB = (pB?.invoice_number || bB?.invoice_number || '').toLowerCase()
+        comp = numA.localeCompare(numB)
+      } else if (sortBy === 'supplier') {
+        const nameA = (pA?.supplier_name || bA?.supplier_name || pA?.supplier_gstin || bA?.supplier_gstin || '').toLowerCase()
+        const nameB = (pB?.supplier_name || bB?.supplier_name || pB?.supplier_gstin || bB?.supplier_gstin || '').toLowerCase()
+        comp = nameA.localeCompare(nameB)
+      } else if (sortBy === 'variance') {
+        comp = Number(a.tax_difference || 0) - Number(b.tax_difference || 0)
+      }
+
+      return sortOrder === 'desc' ? -comp : comp
+    })
+
+    return list
+  }, [reconResult, findingsFilter, riskFilter, searchQuery, sortBy, sortOrder])
+
+  // Phase 1: Filtered and Sorted Supplier Intelligence (100% Deterministic Arithmetic)
+  const filteredSuppliers = useMemo(() => {
+    let list = reconResult?.supplier_summaries || []
+
+    if (supplierSearchQuery.trim()) {
+      const q = supplierSearchQuery.toLowerCase().trim()
+      list = list.filter(s =>
+        (s.supplier_name || '').toLowerCase().includes(q) ||
+        (s.supplier_gstin || '').toLowerCase().includes(q)
+      )
+    }
+
+    list = [...list].sort((a, b) => {
+      let comp = 0
+      if (supplierSortBy === 'atRisk') {
+        comp = Number(a.total_at_risk_itc || 0) - Number(b.total_at_risk_itc || 0)
+      } else if (supplierSortBy === 'invoices') {
+        comp = Number(a.total_invoices || 0) - Number(b.total_invoices || 0)
+      } else if (supplierSortBy === 'name') {
+        comp = (a.supplier_name || a.supplier_gstin).localeCompare(b.supplier_name || b.supplier_gstin)
+      } else if (supplierSortBy === 'missing') {
+        comp = Number(a.missing_in_2b || 0) - Number(b.missing_in_2b || 0)
+      }
+      return supplierSortOrder === 'desc' ? -comp : comp
+    })
+
+    return list
+  }, [reconResult, supplierSearchQuery, supplierSortBy, supplierSortOrder])
 
   const canRunReconcile = Boolean(
     purchaseUpload?.validation_status === 'VALID' &&
@@ -683,6 +852,67 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {/* Phase 1: Session History & Recovery Section */}
+              {sessionHistory.length > 0 && (
+                <div className="content-card">
+                  <div className="content-card-header">
+                    <div>
+                      <h3 className="content-card-title">
+                        <IconHistory size={16} className="text-accent inline mr-1.5" />
+                        Reconciliation Session History & Recovery
+                      </h3>
+                      <p className="subtitle">
+                        Historical reconciliation runs persisted in SQLite. Sessions are fully recoverable after application restart.
+                      </p>
+                    </div>
+                    <button className="btn btn-secondary-sm" onClick={fetchSessionHistory} disabled={historyLoading}>
+                      <IconRefresh size={12} className="mr-1" /> {historyLoading ? 'Refreshing...' : 'Refresh History'}
+                    </button>
+                  </div>
+
+                  <div className="session-history-grid">
+                    {sessionHistory.slice(0, 6).map((s) => {
+                      const isActive = s.session_id === sessionId
+                      const dateFormatted = s.created_at ? new Date(s.created_at).toLocaleString('en-IN') : '-'
+                      let summaryData = null
+                      try {
+                        summaryData = s.summary_json ? JSON.parse(s.summary_json) : null
+                      } catch (e) {}
+
+                      return (
+                        <div key={s.session_id} className={`session-history-card ${isActive ? 'active' : ''}`}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                            <strong className="mono" style={{ fontSize: '0.8rem' }}>{s.session_id}</strong>
+                            <span className={`status-badge ${s.status === 'RECONCILED' ? 'badge-EXACT_MATCH' : 'badge-AMOUNT_MISMATCH'}`}>
+                              {s.status}
+                            </span>
+                          </div>
+                          <div className="text-muted" style={{ fontSize: '0.72rem', marginBottom: '0.4rem' }}>
+                            Created: {dateFormatted}
+                          </div>
+                          <div style={{ fontSize: '0.75rem', marginBottom: '0.65rem' }}>
+                            Records: <strong>{s.purchase_row_count}</strong> Books / <strong>{s.gstr2b_row_count}</strong> 2B
+                            {summaryData?.total_at_risk_itc && Number(summaryData.total_at_risk_itc) > 0 && (
+                              <div style={{ color: 'var(--status-danger)', fontWeight: '600', marginTop: '0.2rem' }}>
+                                At-Risk ITC: ₹{Number(summaryData.total_at_risk_itc).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            className="btn btn-secondary-sm"
+                            onClick={() => loadHistoricalSession(s.session_id)}
+                            disabled={reconLoading || isActive}
+                            style={{ alignSelf: 'flex-start' }}
+                          >
+                            {isActive ? 'Active Session' : 'Restore Session'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -907,6 +1137,325 @@ function App() {
                     <h2 className="content-card-title">Reconciliation Ledger</h2>
                     <p className="subtitle">Deterministic cross-examination of internal purchase books against GSTR-2B returns.</p>
                   </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                    <div className="subview-tabs">
+                      <button
+                        type="button"
+                        className={`subview-tab ${reconSubView === 'invoices' ? 'active' : ''}`}
+                        onClick={() => setReconSubView('invoices')}
+                      >
+                        <IconLedger size={13} />
+                        <span>Invoices Ledger ({filteredResults.length})</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`subview-tab ${reconSubView === 'suppliers' ? 'active' : ''}`}
+                        onClick={() => setReconSubView('suppliers')}
+                      >
+                        <IconUsers size={13} />
+                        <span>Supplier Summary ({filteredSuppliers.length})</span>
+                      </button>
+                    </div>
+
+                    <div className="topbar-actions">
+                      <button className="btn btn-secondary-sm" onClick={() => downloadReport('csv')}>
+                        <IconDownload size={13} className="mr-1" /> Export CSV
+                      </button>
+                      <button className="btn btn-secondary-sm" onClick={() => downloadReport('html')}>
+                        <IconDownload size={13} className="mr-1" /> Certified HTML
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {reconSubView === 'invoices' ? (
+                  <>
+                    {/* Phase 1 Powerful Search & Filter Controls */}
+                    <div className="recon-controls-bar">
+                      <div className="fintech-search-container">
+                        <IconSearch size={14} className="text-muted flex-shrink-0" />
+                        <input
+                          type="text"
+                          className="fintech-search-input"
+                          placeholder="Search invoice #, supplier GSTIN, or name..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                        />
+                        {searchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setSearchQuery('')}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                            title="Clear search"
+                          >
+                            <IconX size={14} className="text-muted" />
+                          </button>
+                        )}
+                      </div>
+
+                      <select
+                        className="fintech-select"
+                        value={riskFilter}
+                        onChange={(e) => setRiskFilter(e.target.value)}
+                        title="Filter by risk category"
+                      >
+                        <option value="ALL">All Risk Levels</option>
+                        <option value="AT_RISK">At-Risk ITC Only</option>
+                        <option value="ZERO_RISK">Zero Risk / Matched</option>
+                      </select>
+
+                      <select
+                        className="fintech-select"
+                        value={`${sortBy}-${sortOrder}`}
+                        onChange={(e) => {
+                          const [b, o] = e.target.value.split('-')
+                          setSortBy(b)
+                          setSortOrder(o)
+                        }}
+                        title="Sort invoices"
+                      >
+                        <option value="atRisk-desc">Sort: Highest At-Risk ITC</option>
+                        <option value="atRisk-asc">Sort: Lowest At-Risk ITC</option>
+                        <option value="invoiceNumber-asc">Sort: Invoice # (A-Z)</option>
+                        <option value="invoiceNumber-desc">Sort: Invoice # (Z-A)</option>
+                        <option value="supplier-asc">Sort: Supplier Name (A-Z)</option>
+                        <option value="variance-desc">Sort: Tax Variance (High-Low)</option>
+                      </select>
+
+                      {(searchQuery || findingsFilter !== 'ALL' || riskFilter !== 'ALL' || sortBy !== 'atRisk' || sortOrder !== 'desc') && (
+                        <button className="btn btn-secondary-sm" onClick={handleResetFilters} title="Reset all search and filter controls">
+                          <IconRefresh size={12} className="mr-1" /> Reset Filters
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Filter Category Chips */}
+                    <div className="filter-tabs-row">
+                      <div className="filter-chips">
+                        {[
+                          { id: 'ALL', label: 'All Invoices' },
+                          { id: 'MATCHED', label: 'Exact Matches' },
+                          { id: 'REVIEW', label: 'Fuzzy Review' },
+                          { id: 'MISMATCH', label: 'Amount Mismatch' },
+                          { id: 'MISSING', label: 'Missing in 2B' },
+                          { id: 'INVALID', label: 'Data Anomalies' },
+                        ].map(tab => (
+                          <button
+                            key={tab.id}
+                            className={`chip-tab ${findingsFilter === tab.id ? 'active' : ''}`}
+                            onClick={() => setFindingsFilter(tab.id)}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-muted mono" style={{ fontSize: '0.72rem' }}>
+                        Showing {filteredResults.length} of {reconResult?.detailed_results?.length || 0} record(s)
+                      </span>
+                    </div>
+
+                    {/* Detailed Invoices Ledger Table */}
+                    <div className="data-table-container">
+                      <table className="fintech-table">
+                        <thead>
+                          <tr>
+                            <th>Status</th>
+                            <th>Invoice</th>
+                            <th>Supplier</th>
+                            <th>GSTIN</th>
+                            <th>Purchase Value</th>
+                            <th>GSTR-2B Value</th>
+                            <th>Variance</th>
+                            <th>ITC at Risk</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredResults.length === 0 ? (
+                            <tr>
+                              <td colSpan="9" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                                No invoice records found matching your active filter criteria.
+                                <div style={{ marginTop: '0.5rem' }}>
+                                  <button className="btn btn-secondary-sm" onClick={handleResetFilters}>
+                                    Clear Filters
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredResults.map((item, idx) => {
+                              const pInv = item.purchase_invoice
+                              const bInv = item.matched_2b_invoice
+                              const pVal = pInv ? Number(pInv.total_tax) : 0
+                              const bVal = bInv ? Number(bInv.total_tax) : 0
+                              const diff = Number(item.tax_difference || 0)
+                              const atRisk = diff > 0 ? diff : (item.status === 'MISSING_IN_2B' || item.status === 'INVALID_DATA' || item.status === 'DUPLICATE_CANDIDATE' ? pVal : 0)
+
+                              return (
+                                <tr key={idx} onClick={() => openInspector(item)} style={{ cursor: 'pointer' }}>
+                                  <td><span className={`status-badge badge-${item.status}`}>{item.status}</span></td>
+                                  <td><strong className="mono">{pInv?.invoice_number || bInv?.invoice_number || '-'}</strong></td>
+                                  <td>{pInv?.supplier_name || bInv?.supplier_name || 'Vendor'}</td>
+                                  <td><code className="mono">{pInv?.supplier_gstin || bInv?.supplier_gstin || '-'}</code></td>
+                                  <td className="mono">{pInv ? `₹${pVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                                  <td className="mono">{bInv ? `₹${bVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
+                                  <td className="mono" style={{ color: diff > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
+                                    ₹{diff.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  </td>
+                                  <td className="mono" style={{ color: atRisk > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
+                                    ₹{atRisk.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  </td>
+                                  <td>
+                                    <button className="btn btn-secondary-sm" onClick={(e) => { e.stopPropagation(); openInspector(item); }}>
+                                      <IconEye size={13} className="inline mr-1" /> Inspect
+                                    </button>
+                                  </td>
+                                </tr>
+                              )
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Supplier Intelligence Summary Subview */}
+                    <div className="data-table-container">
+                      <table className="fintech-table">
+                        <thead>
+                          <tr>
+                            <th>Supplier Name & GSTIN</th>
+                            <th>Total Invoices</th>
+                            <th>Exact Matches</th>
+                            <th>Fuzzy Review</th>
+                            <th>Amount Mismatch</th>
+                            <th>Missing in 2B</th>
+                            <th>Total At-Risk ITC</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredSuppliers.length === 0 ? (
+                            <tr>
+                              <td colSpan="8" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                                No supplier records available. Run or restore reconciliation first.
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredSuppliers.map((s) => {
+                              const atRisk = Number(s.total_at_risk_itc || 0)
+                              return (
+                                <tr key={s.supplier_gstin}>
+                                  <td>
+                                    <div><strong>{s.supplier_name || 'Counterparty Vendor'}</strong></div>
+                                    <code className="mono text-muted" style={{ fontSize: '0.72rem' }}>{s.supplier_gstin}</code>
+                                  </td>
+                                  <td className="mono font-semibold">{s.total_invoices}</td>
+                                  <td><span className="status-badge badge-EXACT_MATCH">{s.exact_matches}</span></td>
+                                  <td>{s.fuzzy_matches > 0 ? <span className="status-badge badge-FUZZY_MATCH_REQUIRES_REVIEW">{s.fuzzy_matches}</span> : <span className="text-muted">-</span>}</td>
+                                  <td>{s.amount_mismatches > 0 ? <span className="status-badge badge-AMOUNT_MISMATCH">{s.amount_mismatches}</span> : <span className="text-muted">-</span>}</td>
+                                  <td>{s.missing_in_2b > 0 ? <span className="status-badge badge-MISSING_IN_2B">{s.missing_in_2b}</span> : <span className="text-muted">-</span>}</td>
+                                  <td className="mono" style={{ color: atRisk > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
+                                    ₹{atRisk.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  </td>
+                                  <td>
+                                    <div style={{ display: 'flex', gap: '0.35rem' }}>
+                                      <button
+                                        className="btn btn-secondary-sm"
+                                        onClick={() => {
+                                          setSearchQuery(s.supplier_gstin)
+                                          setReconSubView('invoices')
+                                        }}
+                                        title="Inspect all invoices for this supplier"
+                                      >
+                                        <IconEye size={12} className="mr-1" /> Invoices
+                                      </button>
+                                      <button
+                                        className="btn btn-secondary-sm"
+                                        onClick={() => {
+                                          setAgentPrompt(`Investigate tax discrepancies and prepare formal supplier dispute notice for ${s.supplier_name || s.supplier_gstin} (GSTIN: ${s.supplier_gstin}) with Rs. ${s.total_at_risk_itc} at-risk ITC under Section 16(2)(aa).`)
+                                          setActiveTab('agent')
+                                        }}
+                                        title="Draft notice with Copilot"
+                                      >
+                                        <IconCopilot size={12} className="mr-1" /> Notice
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB: DEDICATED SUPPLIER INTELLIGENCE WORKSPACE */}
+          {activeTab === 'suppliers' && (
+            <div className="suppliers-workspace">
+              {/* Executive Metrics for Suppliers */}
+              <div className="kpi-grid">
+                <div className="kpi-card">
+                  <div className="kpi-header">
+                    <span className="kpi-label">Total Suppliers</span>
+                    <IconUsers size={16} className="text-accent flex-shrink-0" />
+                  </div>
+                  <div className="kpi-value">{filteredSuppliers.length}</div>
+                  <div className="kpi-sub">Audited Counterparty Entities</div>
+                </div>
+
+                <div className="kpi-card kpi-card-danger">
+                  <div className="kpi-header">
+                    <span className="kpi-label">Non-Compliant Vendors</span>
+                    <IconAlertTriangle size={16} className="text-danger flex-shrink-0" />
+                  </div>
+                  <div className="kpi-value text-danger">
+                    {filteredSuppliers.filter(s => Number(s.total_at_risk_itc) > 0 || s.missing_in_2b > 0).length}
+                  </div>
+                  <div className="kpi-sub">Vendors with Blocked or At-Risk ITC</div>
+                </div>
+
+                <div className="kpi-card">
+                  <div className="kpi-header">
+                    <span className="kpi-label">Missing 2B Invoices</span>
+                    <IconReports size={16} className="text-muted flex-shrink-0" />
+                  </div>
+                  <div className="kpi-value">
+                    {filteredSuppliers.reduce((acc, s) => acc + s.missing_in_2b, 0)}
+                  </div>
+                  <div className="kpi-sub">Unreflected in GSTR-2B Statement</div>
+                </div>
+
+                <div className="kpi-card kpi-card-danger">
+                  <div className="kpi-header">
+                    <span className="kpi-label">Total At-Risk ITC</span>
+                    <IconAlertTriangle size={16} className="text-danger flex-shrink-0" />
+                  </div>
+                  <div className="kpi-value text-danger">
+                    ₹{filteredSuppliers.reduce((acc, s) => acc + Number(s.total_at_risk_itc), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </div>
+                  <div className="kpi-sub">Subject to DRC-01B & Section 50</div>
+                </div>
+              </div>
+
+              {/* Supplier Intelligence Card */}
+              <div className="content-card">
+                <div className="content-card-header">
+                  <div>
+                    <h2 className="content-card-title">
+                      <IconUsers size={16} className="text-accent inline mr-1.5" />
+                      Supplier Intelligence & Counterparty Risk
+                    </h2>
+                    <p className="subtitle">
+                      Deterministic aggregation of GSTIN-level compliance, filing status, and blocked Input Tax Credit.
+                    </p>
+                  </div>
                   <div className="topbar-actions">
                     <button className="btn btn-secondary-sm" onClick={() => downloadReport('csv')}>
                       <IconDownload size={13} className="mr-1" /> Export CSV
@@ -917,81 +1466,117 @@ function App() {
                   </div>
                 </div>
 
-                {/* Filter Tabs */}
-                <div className="filter-tabs-row">
-                  <div className="filter-chips">
-                    {[
-                      { id: 'ALL', label: 'All Invoices' },
-                      { id: 'MATCHED', label: 'Exact Matches' },
-                      { id: 'REVIEW', label: 'Fuzzy Review' },
-                      { id: 'MISMATCH', label: 'Amount Mismatch' },
-                      { id: 'MISSING', label: 'Missing in 2B' },
-                      { id: 'INVALID', label: 'Data Anomalies' },
-                    ].map(tab => (
+                {/* Controls Bar for Suppliers */}
+                <div className="recon-controls-bar">
+                  <div className="fintech-search-container">
+                    <IconSearch size={14} className="text-muted flex-shrink-0" />
+                    <input
+                      type="text"
+                      className="fintech-search-input"
+                      placeholder="Search vendor by name or GSTIN..."
+                      value={supplierSearchQuery}
+                      onChange={(e) => setSupplierSearchQuery(e.target.value)}
+                    />
+                    {supplierSearchQuery && (
                       <button
-                        key={tab.id}
-                        className={`chip-tab ${findingsFilter === tab.id ? 'active' : ''}`}
-                        onClick={() => setFindingsFilter(tab.id)}
+                        type="button"
+                        onClick={() => setSupplierSearchQuery('')}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                       >
-                        {tab.label}
+                        <IconX size={14} className="text-muted" />
                       </button>
-                    ))}
+                    )}
                   </div>
-                  <span className="text-muted mono" style={{ fontSize: '0.72rem' }}>
-                    Showing {filteredResults.length} record(s)
+
+                  <select
+                    className="fintech-select"
+                    value={`${supplierSortBy}-${supplierSortOrder}`}
+                    onChange={(e) => {
+                      const [b, o] = e.target.value.split('-')
+                      setSupplierSortBy(b)
+                      setSupplierSortOrder(o)
+                    }}
+                  >
+                    <option value="atRisk-desc">Sort: Highest At-Risk ITC</option>
+                    <option value="invoices-desc">Sort: Most Invoices</option>
+                    <option value="missing-desc">Sort: Most Missing in 2B</option>
+                    <option value="name-asc">Sort: Supplier Name (A-Z)</option>
+                  </select>
+
+                  {supplierSearchQuery && (
+                    <button className="btn btn-secondary-sm" onClick={() => setSupplierSearchQuery('')}>
+                      <IconRefresh size={12} className="mr-1" /> Clear Search
+                    </button>
+                  )}
+
+                  <span className="text-muted mono" style={{ fontSize: '0.72rem', marginLeft: 'auto' }}>
+                    Showing {filteredSuppliers.length} supplier(s)
                   </span>
                 </div>
 
-                {/* Detailed Findings Table */}
+                {/* Supplier Table */}
                 <div className="data-table-container">
                   <table className="fintech-table">
                     <thead>
                       <tr>
-                        <th>Status</th>
-                        <th>Invoice</th>
-                        <th>Supplier</th>
-                        <th>GSTIN</th>
-                        <th>Purchase Value</th>
-                        <th>GSTR-2B Value</th>
-                        <th>Variance</th>
-                        <th>ITC at Risk</th>
-                        <th>Action</th>
+                        <th>Supplier Details</th>
+                        <th>Total Invoices</th>
+                        <th>Exact Matches</th>
+                        <th>Fuzzy Review</th>
+                        <th>Amount Mismatches</th>
+                        <th>Missing in 2B</th>
+                        <th>At-Risk ITC</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredResults.length === 0 ? (
+                      {filteredSuppliers.length === 0 ? (
                         <tr>
-                          <td colSpan="9" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                            No invoice records found for this category.
+                          <td colSpan="8" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                            No supplier records found. Run or restore reconciliation to generate supplier intelligence.
                           </td>
                         </tr>
                       ) : (
-                        filteredResults.map((item, idx) => {
-                          const pInv = item.purchase_invoice
-                          const bInv = item.matched_2b_invoice
-                          const pVal = pInv ? Number(pInv.total_tax) : 0
-                          const bVal = bInv ? Number(bInv.total_tax) : 0
-                          const diff = Number(item.tax_difference || 0)
-                          const atRisk = diff > 0 ? diff : (item.status === 'MISSING_IN_2B' ? pVal : 0)
-
+                        filteredSuppliers.map((s) => {
+                          const atRisk = Number(s.total_at_risk_itc || 0)
                           return (
-                            <tr key={idx} onClick={() => openInspector(item)} style={{ cursor: 'pointer' }}>
-                              <td><span className={`status-badge badge-${item.status}`}>{item.status}</span></td>
-                              <td><strong className="mono">{pInv?.invoice_number || bInv?.invoice_number || '-'}</strong></td>
-                              <td>{pInv?.supplier_name || bInv?.supplier_name || 'Vendor'}</td>
-                              <td><code className="mono">{pInv?.supplier_gstin || bInv?.supplier_gstin || '-'}</code></td>
-                              <td className="mono">{pInv ? `₹${pVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
-                              <td className="mono">{bInv ? `₹${bVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '-'}</td>
-                              <td className="mono" style={{ color: diff > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
-                                ₹{diff.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            <tr key={s.supplier_gstin}>
+                              <td>
+                                <div><strong>{s.supplier_name || 'Vendor Entity'}</strong></div>
+                                <code className="mono text-muted" style={{ fontSize: '0.72rem' }}>{s.supplier_gstin}</code>
                               </td>
-                              <td className="mono" style={{ color: atRisk > 0 ? 'var(--status-danger)' : 'inherit' }}>
+                              <td className="mono font-semibold">{s.total_invoices}</td>
+                              <td><span className="status-badge badge-EXACT_MATCH">{s.exact_matches}</span></td>
+                              <td>{s.fuzzy_matches > 0 ? <span className="status-badge badge-FUZZY_MATCH_REQUIRES_REVIEW">{s.fuzzy_matches}</span> : <span className="text-muted">-</span>}</td>
+                              <td>{s.amount_mismatches > 0 ? <span className="status-badge badge-AMOUNT_MISMATCH">{s.amount_mismatches}</span> : <span className="text-muted">-</span>}</td>
+                              <td>{s.missing_in_2b > 0 ? <span className="status-badge badge-MISSING_IN_2B">{s.missing_in_2b}</span> : <span className="text-muted">-</span>}</td>
+                              <td className="mono" style={{ color: atRisk > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
                                 ₹{atRisk.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                               </td>
                               <td>
-                                <button className="btn btn-secondary-sm" onClick={(e) => { e.stopPropagation(); openInspector(item); }}>
-                                  <IconEye size={13} className="inline mr-1" /> Inspect
-                                </button>
+                                <div style={{ display: 'flex', gap: '0.35rem' }}>
+                                  <button
+                                    className="btn btn-secondary-sm"
+                                    onClick={() => {
+                                      setSearchQuery(s.supplier_gstin)
+                                      setReconSubView('invoices')
+                                      setActiveTab('reconciliation')
+                                    }}
+                                    title="View invoices for this supplier"
+                                  >
+                                    <IconEye size={12} className="mr-1" /> View Invoices
+                                  </button>
+                                  <button
+                                    className="btn btn-primary-sm"
+                                    onClick={() => {
+                                      setAgentPrompt(`Investigate tax discrepancies and prepare formal supplier dispute notice for ${s.supplier_name || s.supplier_gstin} (GSTIN: ${s.supplier_gstin}) with Rs. ${s.total_at_risk_itc} at-risk ITC under Section 16(2)(aa).`)
+                                      setActiveTab('agent')
+                                    }}
+                                    title="Draft vendor dispute notice"
+                                  >
+                                    <IconCopilot size={12} className="mr-1" /> Notice
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           )
