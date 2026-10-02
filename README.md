@@ -1,6 +1,6 @@
 # VyaparMitra (व्यापार मित्र)
 
-**Autonomous MSME GST Reconciliation, Supplier Risk Intelligence & Dispute Resolution Copilot**<br/>
+**AI-Powered MSME GST Reconciliation, Supplier Risk Intelligence & Dispute Resolution Copilot**<br/>
 *Built for Bharat MSMEs • Zero-LLM-Math Architecture • Human-in-the-Loop Governance*
 
 [![Backend Tests](https://img.shields.io/badge/pytest-107%2F107%20passed-brightgreen.svg)]()
@@ -12,7 +12,7 @@
 
 ## 1. Executive Summary & Problem Statement
 
-Micro, Small, and Medium Enterprises (MSMEs) across Bharat lose billions of rupees annually in blocked working capital and statutory penalties due to discrepancies between internal purchase records and government **GSTR-2B** inward return filings.
+MSMEs and finance teams can lose time and working capital when purchase records and GSTR-2B data contain discrepancies.
 
 ### Key Statutory Drivers in India
 - **Section 16(2)(aa) of the CGST Act:** A taxpayer cannot claim Input Tax Credit (ITC) unless the supplier has accurately reported the invoice in their GSTR-1 / IFF and the details appear in the buyer's auto-generated GSTR-2B.
@@ -21,7 +21,7 @@ Micro, Small, and Medium Enterprises (MSMEs) across Bharat lose billions of rupe
 - **DRC-01B Intimations:** Discrepancies between ITC claimed in GSTR-3B and available in GSTR-2B trigger automated departmental notices demanding payment or detailed explanation.
 
 ### The Problem for Small Businesses
-MSMEs rarely have full-time tax law departments. Business owners and bookkeepers grapple with messy, multi-format spreadsheets (Tally, Busy, Excel, CSV), inconsistent invoice numbering, rounding errors, and non-responsive delinquent suppliers.
+MSMEs rarely have dedicated in-house tax teams. Business owners and bookkeepers grapple with heterogeneous spreadsheets (Tally, Busy, Excel, CSV), inconsistent invoice numbering conventions, rounding variances, and uncooperative or non-compliant suppliers.
 
 ---
 
@@ -139,7 +139,7 @@ The orchestrator dynamically chooses from **14 registered deterministic tools** 
 | `tool_normalize_invoice` | Normalization | Normalizes invoice number strings by stripping harmless delimiters | `invoice_number` |
 | `tool_calculate_tax_differences` | Calculation | Computes monetary variances using Decimal arithmetic | `purchase_*`, `gstr2b_*`, `tolerance` |
 | `tool_calculate_section_50_interest` | Calculation | Computes statutory 18% simple interest on delayed tax claims | `principal_tax`, `delay_days`, `annual_rate` |
-| `tool_lookup_statutory_rule` | Statutory | Fetches authoritative text for GST Act rules (Sec 16, 50, Rule 37A) | `rule_id` |
+| `tool_lookup_statutory_rule` | Statutory | Retrieves statutory reference metadata and compliance guidance (Sec 16, 50, Rule 37A) | rule_id |
 | `tool_get_session_summary` | Investigation | Retrieves high-level reconciliation KPIs and total at-risk ITC | `session_id` |
 | `tool_get_missing_invoices` | Investigation | Identifies invoices missing in GSTR-2B returns or Purchase Register | `session_id` |
 | `tool_inspect_invoice` | Investigation | Deep drilldown into tax variances, dates, and match status for an invoice | `session_id`, `invoice_number` |
@@ -155,16 +155,16 @@ The orchestrator dynamically chooses from **14 registered deterministic tools** 
 
 The supplier risk score is calculated using an explainable, 100% deterministic mathematical model:
 
-$$\text{Risk Score} = \min\left(100, \sum \text{Factors}\right)$$
+$$\text{Risk Score} = \min(100, \text{Sum of Factors})$$
 
 | Component | Logic | Maximum Weight |
 | :--- | :--- | :---: |
-| **Missing in 2B Factor** | $30 \text{ base} + \min(20, \text{missing\_count} \times 10)$ | 50 pts |
-| **Tax Mismatch Factor** | $15 \text{ base} + \min(15, \text{mismatch\_count} \times 5)$ | 30 pts |
-| **Duplicate / Invalid Data** | 25 pts if duplicates or invalid GSTINs are detected | 25 pts |
-| **Exposure Magnitude** | $\ge \text{₹50,000} \to 20 \text{ pts} \mid \ge \text{₹10,000} \to 10 \text{ pts} \mid > 0 \to 5 \text{ pts}$ | 20 pts |
+| **Missing in 2B Factor** | 30 base + min(20, missing count × 10) | 50 pts |
+| **Tax Mismatch Factor** | 15 base + min(15, mismatch count × 5) | 30 pts |
+| **Duplicate / Invalid Data** | 25 pts if duplicates or invalid records detected | 25 pts |
+| **Exposure Magnitude** | ≥ ₹50,000 → 20 pts \| ≥ ₹10,000 → 10 pts \| > ₹0 → 5 pts | 20 pts |
 | **Fuzzy Match Review** | 5 pts if fuzzy matches require manual verification | 5 pts |
-| **Perfect Match Bonus** | Score is explicitly **0** if all invoices match exactly and exposure is 0 | 0 pts |
+| **Perfect Match Bonus** | Score is explicitly 0 if all invoices match exactly and exposure is 0 | 0 pts |
 
 ### Risk Categories
 - **0 – 24:** LOW RISK (Compliant counterparty)
@@ -230,8 +230,8 @@ VyaparMitra exposes 22 robust REST endpoints:
 
 ### 1. Clone Repository & Setup Backend
 ```bash
-git clone https://github.com/your-username/BharatAgentic2026.git
-cd BharatAgentic2026
+git clone https://github.com/Karthik11022008/VyaparMitra.git
+cd VyaparMitra
 
 # Create and activate virtual environment
 python -m venv .venv
@@ -328,6 +328,15 @@ npm run build
 
 ---
 
-## 15. License
+## 15. Authorship & Attribution
+
+- **Project:** VyaparMitra (व्यापार मित्र)
+- **Author:** Karthik Kumar G ([@Karthik11022008](https://github.com/Karthik11022008))
+- **Event:** Built for BHARAT AGENTIC 2026
+- **Architecture & Originality:** Original implementation of deterministic multi-stage GST matching, explainable counterparty risk intelligence, and human-governed agentic workflows.
+
+---
+
+## 16. License
 
 Distributed under the MIT License. See `LICENSE` for more information.
