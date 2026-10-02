@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 import logging
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
 from backend.app.agent.models import (
     AgentRequest,
     AgentAnalyzeResponse,
@@ -9,7 +11,14 @@ from backend.app.agent.models import (
     AgentInvestigateResponse,
 )
 from backend.app.agent.orchestrator import VyaparMitraOrchestrator, get_agent_orchestrator
-from backend.app.database import log_audit_event
+from backend.app.database import (
+    log_audit_event,
+    create_conversation,
+    get_conversations,
+    get_conversation,
+    get_conversation_messages,
+    delete_conversation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,3 +90,47 @@ async def handle_notice_action(notice_id: str, payload: NoticeActionRequest):
         status="success",
         message=f"Notice '{notice_id}' successfully marked as {action}."
     )
+
+class CreateConversationRequest(BaseModel):
+    session_id: str
+    title: Optional[str] = "Reconciliation Inquiry"
+
+@router.post("/conversations")
+async def create_new_conversation(payload: CreateConversationRequest):
+    """Initializes a new persistent agent conversation for the session."""
+    try:
+        conv = create_conversation(session_id=payload.session_id, title=payload.title)
+        return conv
+    except Exception as e:
+        logger.error(f"Error creating conversation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create conversation.")
+
+@router.get("/conversations/{session_id}")
+async def list_conversations(session_id: str):
+    """Lists all persistent conversations associated with a reconciliation session."""
+    try:
+        convs = get_conversations(session_id=session_id)
+        return convs
+    except Exception as e:
+        logger.error(f"Error listing conversations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list conversations.")
+
+@router.get("/conversations/{conversation_id}/messages")
+async def get_messages_for_conversation(conversation_id: str):
+    """Returns chronological message history with structured traces for a conversation."""
+    try:
+        messages = get_conversation_messages(conversation_id)
+        return messages
+    except Exception as e:
+        logger.error(f"Error fetching conversation messages: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve conversation messages.")
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation_endpoint(conversation_id: str):
+    """Deletes conversation and its message history."""
+    try:
+        deleted = delete_conversation(conversation_id)
+        return {"status": "success", "conversation_id": conversation_id, "deleted": deleted}
+    except Exception as e:
+        logger.error(f"Error deleting conversation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete conversation.")

@@ -3,6 +3,8 @@ import './App.css'
 import { Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { EvidenceSlideOver } from './components/EvidenceSlideOver'
+import { SupplierDrillDownModal } from './components/SupplierDrillDownModal'
+import { GlobalAssistantDrawer } from './components/GlobalAssistantDrawer'
 import {
   IconOverview,
   IconUpload,
@@ -92,8 +94,19 @@ function App() {
 
   // Phase 1 Supplier Intelligence Workspace State
   const [supplierSearchQuery, setSupplierSearchQuery] = useState('')
-  const [supplierSortBy, setSupplierSortBy] = useState('atRisk') // atRisk, invoices, name, missing
+  const [supplierSortBy, setSupplierSortBy] = useState('atRisk') // atRisk, invoices, name, missing, riskScore
   const [supplierSortOrder, setSupplierSortOrder] = useState('desc') // desc, asc
+
+  // Phase 4: Supplier Risk Intelligence State
+  const [inspectingSupplierGstin, setInspectingSupplierGstin] = useState(null)
+  const [isSupplierDrillDownOpen, setIsSupplierDrillDownOpen] = useState(false)
+  const [supplierRiskProfiles, setSupplierRiskProfiles] = useState([])
+  const [supplierRiskLoading, setSupplierRiskLoading] = useState(false)
+
+  // Phase 5: Global Persistent Assistant State
+  const [isGlobalAssistantOpen, setIsGlobalAssistantOpen] = useState(false)
+  const [assistantSupplierContext, setAssistantSupplierContext] = useState(null)
+  const [assistantInvoiceContext, setAssistantInvoiceContext] = useState(null)
 
   // Phase 1 Session History & Recovery State
   const [sessionHistory, setSessionHistory] = useState([])
@@ -184,6 +197,23 @@ function App() {
     }
   }
 
+  // Phase 4: Fetch Deterministic Supplier Risk Profiles
+  const fetchSupplierRiskProfiles = async (targetSessionId) => {
+    const sid = targetSessionId || sessionId || 'demo-session'
+    setSupplierRiskLoading(true)
+    try {
+      const res = await fetch(`http://localhost:8000/api/suppliers/${sid}/risk`)
+      if (res.ok) {
+        const data = await res.json()
+        setSupplierRiskProfiles(data || [])
+      }
+    } catch (e) {
+      console.warn('Failed to load supplier risk profiles:', e)
+    } finally {
+      setSupplierRiskLoading(false)
+    }
+  }
+
   // Phase 1: Restore a Historical Session from SQLite
   const loadHistoricalSession = async (targetSessionId) => {
     if (!targetSessionId) return
@@ -197,6 +227,7 @@ function App() {
       setSessionId(targetSessionId)
       fetchAuditTrail(targetSessionId)
       fetchSessionHistory()
+      fetchSupplierRiskProfiles(targetSessionId)
       setActiveTab('reconciliation')
     } catch (e) {
       setReconError(e.message)
@@ -280,6 +311,7 @@ function App() {
       setReconResult(data)
       fetchAuditTrail(sessionId)
       fetchSessionHistory()
+      fetchSupplierRiskProfiles(sessionId)
       setActiveTab('reconciliation')
     } catch (err) {
       setReconError(err.message)
@@ -305,6 +337,7 @@ function App() {
       setSessionId(sid)
       fetchAuditTrail(sid)
       fetchSessionHistory()
+      fetchSupplierRiskProfiles(sid)
       setActiveTab('reconciliation')
     } catch (err) {
       setReconError(err.message)
@@ -570,6 +603,12 @@ function App() {
     fetchSessionHistory()
   }, [])
 
+  useEffect(() => {
+    if (activeTab === 'suppliers' && supplierRiskProfiles.length === 0) {
+      fetchSupplierRiskProfiles(sessionId || 'demo-session')
+    }
+  }, [activeTab, sessionId])
+
   // Metrics calculation
   const summary = reconResult?.summary
   const atRiskAmount = summary ? Number(summary.total_at_risk_itc) : 0
@@ -674,9 +713,35 @@ function App() {
     return list
   }, [reconResult, findingsFilter, riskFilter, searchQuery, sortBy, sortOrder])
 
-  // Phase 1: Filtered and Sorted Supplier Intelligence (100% Deterministic Arithmetic)
+  // Phase 1 & 4: Filtered and Sorted Supplier Intelligence (100% Deterministic Arithmetic)
   const filteredSuppliers = useMemo(() => {
     let list = reconResult?.supplier_summaries || []
+
+    if (list.length === 0 && supplierRiskProfiles.length > 0) {
+      list = supplierRiskProfiles.map(rp => ({
+        supplier_gstin: rp.supplier_gstin,
+        supplier_name: rp.supplier_name,
+        total_invoices: rp.total_invoices,
+        exact_matches: rp.exact_matches,
+        fuzzy_matches: rp.fuzzy_matches,
+        amount_mismatches: rp.tax_mismatches,
+        missing_in_2b: rp.missing_in_2b,
+        total_at_risk_itc: rp.at_risk_itc,
+        risk_score: rp.risk_score,
+        risk_category: rp.risk_category,
+        signals: rp.signals,
+      }))
+    } else {
+      list = list.map(s => {
+        const rp = supplierRiskProfiles.find(p => p.supplier_gstin === s.supplier_gstin)
+        return {
+          ...s,
+          risk_score: rp ? rp.risk_score : (Number(s.total_at_risk_itc) > 0 ? 55 : 0),
+          risk_category: rp ? rp.risk_category : (Number(s.total_at_risk_itc) > 0 ? 'HIGH' : 'LOW'),
+          signals: rp ? rp.signals : [],
+        }
+      })
+    }
 
     if (supplierSearchQuery.trim()) {
       const q = supplierSearchQuery.toLowerCase().trim()
@@ -688,7 +753,9 @@ function App() {
 
     list = [...list].sort((a, b) => {
       let comp = 0
-      if (supplierSortBy === 'atRisk') {
+      if (supplierSortBy === 'riskScore') {
+        comp = Number(a.risk_score || 0) - Number(b.risk_score || 0)
+      } else if (supplierSortBy === 'atRisk') {
         comp = Number(a.total_at_risk_itc || 0) - Number(b.total_at_risk_itc || 0)
       } else if (supplierSortBy === 'invoices') {
         comp = Number(a.total_invoices || 0) - Number(b.total_invoices || 0)
@@ -701,7 +768,7 @@ function App() {
     })
 
     return list
-  }, [reconResult, supplierSearchQuery, supplierSortBy, supplierSortOrder])
+  }, [reconResult, supplierRiskProfiles, supplierSearchQuery, supplierSortBy, supplierSortOrder])
 
   const canRunReconcile = Boolean(
     purchaseUpload?.validation_status === 'VALID' &&
@@ -735,6 +802,7 @@ function App() {
           sessionId={sessionId}
           onRunDemo={runDemoReconciliation}
           onOpenAgent={() => setActiveTab('agent')}
+          onOpenAskAssistant={() => setIsGlobalAssistantOpen(true)}
           reconLoading={reconLoading}
           atRiskAmount={atRiskAmount}
           onToggleSidebar={toggleSidebar}
@@ -1656,6 +1724,7 @@ function App() {
                       setSupplierSortOrder(o)
                     }}
                   >
+                    <option value="riskScore-desc">Sort: Highest Risk Score (0-100)</option>
                     <option value="atRisk-desc">Sort: Highest At-Risk ITC</option>
                     <option value="invoices-desc">Sort: Most Invoices</option>
                     <option value="missing-desc">Sort: Most Missing in 2B</option>
@@ -1679,11 +1748,11 @@ function App() {
                     <thead>
                       <tr>
                         <th>Supplier Details</th>
-                        <th>Total Invoices</th>
-                        <th>Exact Matches</th>
-                        <th>Fuzzy Review</th>
-                        <th>Amount Mismatches</th>
-                        <th>Missing in 2B</th>
+                        <th>Risk Score</th>
+                        <th>Risk Level & Signals</th>
+                        <th>Invoices</th>
+                        <th>Missing 2B</th>
+                        <th>Mismatches</th>
                         <th>At-Risk ITC</th>
                         <th>Actions</th>
                       </tr>
@@ -1698,42 +1767,75 @@ function App() {
                       ) : (
                         filteredSuppliers.map((s) => {
                           const atRisk = Number(s.total_at_risk_itc || 0)
+                          const riskCat = (s.risk_category || 'LOW').toUpperCase()
+                          const riskScore = s.risk_score ?? 0
+
                           return (
-                            <tr key={s.supplier_gstin}>
+                            <tr
+                              key={s.supplier_gstin}
+                              onClick={() => {
+                                setInspectingSupplierGstin(s.supplier_gstin)
+                                setIsSupplierDrillDownOpen(true)
+                              }}
+                              style={{ cursor: 'pointer' }}
+                            >
                               <td>
                                 <div><strong>{s.supplier_name || 'Vendor Entity'}</strong></div>
                                 <code className="mono text-muted" style={{ fontSize: '0.72rem' }}>{s.supplier_gstin}</code>
                               </td>
+                              <td>
+                                <span className={`status-badge badge-risk-${riskCat.toLowerCase()}`}>
+                                  {riskScore} / 100
+                                </span>
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                  <span style={{
+                                    fontSize: '0.7rem',
+                                    fontWeight: 700,
+                                    color: riskCat === 'CRITICAL' ? 'var(--status-danger)' : riskCat === 'HIGH' ? '#f59e0b' : 'inherit'
+                                  }}>
+                                    {riskCat} RISK
+                                  </span>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem' }}>
+                                    {(s.signals || []).slice(0, 2).map((sig, sIdx) => (
+                                      <span key={sIdx} className="signal-pill-mini">
+                                        {sig.label}
+                                      </span>
+                                    ))}
+                                    {s.signals && s.signals.length > 2 && (
+                                      <span className="signal-pill-mini">+{s.signals.length - 2}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
                               <td className="mono font-semibold">{s.total_invoices}</td>
-                              <td><span className="status-badge badge-EXACT_MATCH">{s.exact_matches}</span></td>
-                              <td>{s.fuzzy_matches > 0 ? <span className="status-badge badge-FUZZY_MATCH_REQUIRES_REVIEW">{s.fuzzy_matches}</span> : <span className="text-muted">-</span>}</td>
-                              <td>{s.amount_mismatches > 0 ? <span className="status-badge badge-AMOUNT_MISMATCH">{s.amount_mismatches}</span> : <span className="text-muted">-</span>}</td>
                               <td>{s.missing_in_2b > 0 ? <span className="status-badge badge-MISSING_IN_2B">{s.missing_in_2b}</span> : <span className="text-muted">-</span>}</td>
+                              <td>{s.amount_mismatches > 0 ? <span className="status-badge badge-AMOUNT_MISMATCH">{s.amount_mismatches}</span> : <span className="text-muted">-</span>}</td>
                               <td className="mono" style={{ color: atRisk > 0 ? 'var(--status-danger)' : 'inherit', fontWeight: 'bold' }}>
                                 ₹{atRisk.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                               </td>
                               <td>
-                                <div style={{ display: 'flex', gap: '0.35rem' }}>
+                                <div style={{ display: 'flex', gap: '0.35rem' }} onClick={(e) => e.stopPropagation()}>
                                   <button
                                     className="btn btn-secondary-sm"
                                     onClick={() => {
-                                      setSearchQuery(s.supplier_gstin)
-                                      setReconSubView('invoices')
-                                      setActiveTab('reconciliation')
+                                      setInspectingSupplierGstin(s.supplier_gstin)
+                                      setIsSupplierDrillDownOpen(true)
                                     }}
-                                    title="View invoices for this supplier"
+                                    title="View detailed risk breakdown and multi-session trends"
                                   >
-                                    <IconEye size={12} className="mr-1" /> View Invoices
+                                    <IconEye size={12} className="mr-1" /> Drill Down
                                   </button>
                                   <button
                                     className="btn btn-primary-sm"
                                     onClick={() => {
-                                      setAgentPrompt(`Investigate tax discrepancies and prepare formal supplier dispute notice for ${s.supplier_name || s.supplier_gstin} (GSTIN: ${s.supplier_gstin}) with Rs. ${s.total_at_risk_itc} at-risk ITC under Section 16(2)(aa).`)
-                                      setActiveTab('agent')
+                                      setAssistantSupplierContext(s.supplier_gstin)
+                                      setIsGlobalAssistantOpen(true)
                                     }}
-                                    title="Draft vendor dispute notice"
+                                    title="Ask Assistant about this supplier"
                                   >
-                                    <IconCopilot size={12} className="mr-1" /> Notice
+                                    <IconCopilot size={12} className="mr-1" /> Copilot
                                   </button>
                                 </div>
                               </td>
@@ -2563,6 +2665,74 @@ function App() {
         onDraftNotice={(item) => {
           setActiveTab('agent')
           setAgentPrompt(`Review discrepancy for invoice ${item.purchase_invoice?.invoice_number || item.matched_2b_invoice?.invoice_number} from supplier ${item.purchase_invoice?.supplier_gstin || item.matched_2b_invoice?.supplier_gstin} and draft a dispute communication.`)
+        }}
+      />
+
+      {/* Phase 4: Supplier Drill-Down Drawer Modal */}
+      <SupplierDrillDownModal
+        isOpen={isSupplierDrillDownOpen}
+        onClose={() => setIsSupplierDrillDownOpen(false)}
+        supplierGstin={inspectingSupplierGstin}
+        sessionId={sessionId}
+        onInspectInvoice={(inv) => {
+          openInspector({
+            purchase_invoice: {
+              invoice_number: inv.invoice_number,
+              supplier_gstin: inspectingSupplierGstin,
+              supplier_name: inv.supplier_name || 'Vendor',
+              total_tax: inv.purchase_tax,
+            },
+            matched_2b_invoice: inv.gstr2b_tax !== null ? {
+              invoice_number: inv.invoice_number,
+              supplier_gstin: inspectingSupplierGstin,
+              supplier_name: inv.supplier_name || 'Vendor',
+              total_tax: inv.gstr2b_tax,
+            } : null,
+            status: inv.status,
+            tax_difference: inv.tax_difference,
+            reason: inv.reason,
+            statutory_rule: inv.statutory_rule,
+          })
+        }}
+        onAskAboutSupplier={(gstin) => {
+          setIsSupplierDrillDownOpen(false)
+          setAssistantSupplierContext(gstin)
+          setIsGlobalAssistantOpen(true)
+        }}
+        onDraftNotice={(gstin, name) => {
+          setIsSupplierDrillDownOpen(false)
+          setAgentPrompt(`Investigate tax discrepancies and prepare formal supplier dispute notice for ${name || gstin} (GSTIN: ${gstin}) under Section 16(2)(aa).`)
+          setActiveTab('agent')
+        }}
+      />
+
+      {/* Phase 5: Global Persistent Ask VyaparMitra Assistant Drawer */}
+      <GlobalAssistantDrawer
+        isOpen={isGlobalAssistantOpen}
+        onClose={() => setIsGlobalAssistantOpen(false)}
+        sessionId={sessionId}
+        currentSupplierContext={assistantSupplierContext}
+        currentInvoiceContext={assistantInvoiceContext}
+        onClearSupplierContext={() => setAssistantSupplierContext(null)}
+        onClearInvoiceContext={() => setAssistantInvoiceContext(null)}
+        onInspectInvoice={(invNo) => {
+          setSearchQuery(invNo)
+          setActiveTab('reconciliation')
+          setIsGlobalAssistantOpen(false)
+        }}
+        onNoticeAction={async (noticeId, action) => {
+          try {
+            const res = await fetch(`http://localhost:8000/api/agent/notice/${noticeId}/action`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sessionId || 'demo-session', action })
+            })
+            if (res.ok) {
+              if (sessionId) fetchAuditTrail(sessionId)
+            }
+          } catch (e) {
+            console.warn('Notice action failed:', e)
+          }
         }}
       />
     </div>

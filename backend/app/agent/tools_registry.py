@@ -252,6 +252,28 @@ def tool_run_reconciliation() -> Dict[str, Any]:
     res = reconcile_demo_dataset()
     return res.model_dump(mode="json")
 
+def tool_get_supplier_profile(session_id: Optional[str] = None, supplier_gstin: str = "") -> Dict[str, Any]:
+    """Retrieves full deterministic risk profile, score (0-100), signals, and affected invoices for a supplier."""
+    from backend.app.services.supplier_risk_service import build_supplier_risk_profile
+    prof = build_supplier_risk_profile(session_id, supplier_gstin)
+    if not prof:
+        return {"found": False, "supplier_gstin": supplier_gstin, "error": f"Supplier '{supplier_gstin}' not found in active session."}
+    d = prof.model_dump(mode="json")
+    d["found"] = True
+    return d
+
+def tool_get_all_supplier_risk_profiles(session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieves deterministic risk profiles for all suppliers in the session ranked by risk score."""
+    from backend.app.services.supplier_risk_service import build_all_supplier_risk_profiles
+    profs = build_all_supplier_risk_profiles(session_id)
+    return [p.model_dump(mode="json") for p in profs]
+
+def tool_get_supplier_history(supplier_gstin: str = "") -> Dict[str, Any]:
+    """Retrieves multi-session historical trends and recurring compliance patterns for a supplier."""
+    from backend.app.services.supplier_risk_service import get_supplier_history_profile
+    hist = get_supplier_history_profile(supplier_gstin)
+    return hist.model_dump(mode="json")
+
 # Tool metadata for Agent registration & dispatch
 AVAILABLE_TOOLS = {
     "tool_run_reconciliation": tool_run_reconciliation,
@@ -265,6 +287,9 @@ AVAILABLE_TOOLS = {
     "tool_inspect_invoice": tool_inspect_invoice,
     "tool_get_supplier_discrepancies": tool_get_supplier_discrepancies,
     "tool_search_invoices": tool_search_invoices,
+    "tool_get_supplier_profile": tool_get_supplier_profile,
+    "tool_get_all_supplier_risk_profiles": tool_get_all_supplier_risk_profiles,
+    "tool_get_supplier_history": tool_get_supplier_history,
 }
 
 from dataclasses import dataclass, field
@@ -413,6 +438,40 @@ TOOL_CONTRACTS: Dict[str, ToolContract] = {
         required_params=["query"],
         is_deterministic=True,
         requires_session=True,
+    ),
+    "tool_get_supplier_profile": ToolContract(
+        name="tool_get_supplier_profile",
+        description="Retrieves deterministic risk profile, score (0-100), risk signals, and affected invoices for a specific supplier.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."},
+            "supplier_gstin": {"type": "string", "description": "Supplier GSTIN to inspect."}
+        },
+        required_params=["supplier_gstin"],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+    "tool_get_all_supplier_risk_profiles": ToolContract(
+        name="tool_get_all_supplier_risk_profiles",
+        description="Retrieves ranked risk profiles and scores for all counterparty suppliers in the session.",
+        category="data_retrieval",
+        parameters={
+            "session_id": {"type": "string", "description": "Active reconciliation session ID."}
+        },
+        required_params=[],
+        is_deterministic=True,
+        requires_session=True,
+    ),
+    "tool_get_supplier_history": ToolContract(
+        name="tool_get_supplier_history",
+        description="Retrieves multi-session historical compliance trends and recurring discrepancy patterns for a supplier.",
+        category="data_retrieval",
+        parameters={
+            "supplier_gstin": {"type": "string", "description": "Supplier GSTIN to look up historical trends."}
+        },
+        required_params=["supplier_gstin"],
+        is_deterministic=True,
+        requires_session=False,
     ),
 }
 
@@ -622,5 +681,22 @@ def _build_observation_summary(tool_name: str, args: Dict[str, Any], result: Any
 
     if tool_name == "tool_run_reconciliation":
         return "Executed deterministic reconciliation engine across active datasets."
+
+    if tool_name == "tool_get_supplier_profile":
+        if isinstance(result, dict) and result.get("found"):
+            return f"Supplier {result.get('supplier_name', '')} ({result.get('supplier_gstin', '')}): Risk Score {result.get('risk_score', 0)}/100 ({result.get('risk_category', '')}), {len(result.get('signals', []))} signals, ₹{result.get('at_risk_itc', 0):,.2f} at-risk ITC."
+        gstin = args.get("supplier_gstin", "")
+        return f"Supplier '{gstin}' profile not found in active session."
+
+    if tool_name == "tool_get_all_supplier_risk_profiles":
+        count = len(result) if isinstance(result, list) else 0
+        top = result[0].get("supplier_name") if count > 0 else "None"
+        top_score = result[0].get("risk_score") if count > 0 else 0
+        return f"Audited {count} suppliers across session. Highest risk: {top} ({top_score}/100)."
+
+    if tool_name == "tool_get_supplier_history":
+        cnt = result.get("sessions_seen_count", 0) if isinstance(result, dict) else 0
+        pats = len(result.get("detected_patterns", [])) if isinstance(result, dict) else 0
+        return f"Historical audit for {args.get('supplier_gstin')}: seen in {cnt} session(s), {pats} recurring pattern(s) identified."
 
     return f"Completed tool '{tool_name}' successfully."

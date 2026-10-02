@@ -86,6 +86,8 @@ class AgentInvestigateRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Conversational query regarding reconciliation session")
     session_id: Optional[str] = Field(default=None, description="Active reconciliation session ID")
     invoice_context: Optional[str] = Field(default=None, description="Optional invoice number context")
+    supplier_context: Optional[str] = Field(default=None, description="Optional supplier GSTIN context")
+    conversation_id: Optional[str] = Field(default=None, description="Optional persistent conversation ID")
 
 class AgentEvidenceItem(BaseModel):
     invoice_number: str
@@ -103,6 +105,8 @@ class AgentInvestigateResponse(BaseModel):
     session_id: str
     user_question: str
     intent: str
+    conversation_id: Optional[str] = None
+    message_id: Optional[str] = None
     plan: List[str] = Field(default_factory=list)
     steps_executed: List[AgentStepTrace] = Field(default_factory=list)
     answer: str

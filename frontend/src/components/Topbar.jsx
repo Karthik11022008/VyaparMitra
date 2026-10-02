@@ -7,6 +7,7 @@ export const Topbar = ({
   sessionId,
   onRunDemo,
   onOpenAgent,
+  onOpenAskAssistant,
   reconLoading,
   atRiskAmount,
   onToggleSidebar,
@@ -84,11 +85,19 @@ export const Topbar = ({
             <IconLedger size={14} className="inline mr-1" /> Demo Data
           </button>
           <button
+            className="btn btn-ask-assistant"
+            onClick={onOpenAskAssistant}
+            title="Ask VyaparMitra AI Assistant (Anytime slide-out)"
+          >
+            <IconCopilot size={14} className="inline mr-1 text-accent" />
+            <span>Ask VyaparMitra</span>
+          </button>
+          <button
             className="btn btn-primary-sm"
             onClick={onOpenAgent}
             title="Open AI Copilot and Dispute Resolution"
           >
-            <IconCopilot size={14} className="inline mr-1" /> Run Copilot
+            <IconCopilot size={14} className="inline mr-1" /> Batch Notice
           </button>
         </div>
       </div>

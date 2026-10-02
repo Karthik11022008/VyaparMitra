@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -63,6 +64,37 @@ def _run_init_db(conn: sqlite3.Connection) -> None:
                 details TEXT NOT NULL
             )
         """)
+        # Phase 5: Additive tables for persistent conversations & messages
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_conversations (
+                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                message_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                intent TEXT,
+                tools_used TEXT,
+                plan TEXT,
+                steps_executed TEXT,
+                evidence TEXT,
+                suggested_action TEXT,
+                draft_notice TEXT,
+                context_json TEXT,
+                timestamp TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_conv_session ON agent_conversations(session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_msg_conv ON agent_messages(conversation_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_msg_session ON agent_messages(session_id)")
 
         # Phase 1 Safe Additive Migration: Add results_json & supplier_summary_json if missing in existing DB
         cursor = conn.execute("PRAGMA table_info(reconciliation_sessions)")
@@ -226,6 +258,176 @@ def get_reconciliation_history(limit: int = 50) -> List[Dict[str, Any]]:
             (limit,)
         )
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+# ==============================================================================
+# Phase 5: Persistent Conversation Management
+# ==============================================================================
+
+def create_conversation(session_id: str, title: str = "Investigation Thread") -> Dict[str, Any]:
+    """Creates a new persistent conversation thread scoped to a reconciliation session."""
+    cid = f"conv-{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO agent_conversations (conversation_id, session_id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (cid, session_id, title, now_iso, now_iso)
+            )
+        return {
+            "conversation_id": cid,
+            "session_id": session_id,
+            "title": title,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+    finally:
+        conn.close()
+
+def get_conversations(session_id: str) -> List[Dict[str, Any]]:
+    """Retrieves all conversation threads for a given session."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT conversation_id, session_id, title, created_at, updated_at
+            FROM agent_conversations
+            WHERE session_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (session_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches single conversation details."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM agent_conversations WHERE conversation_id = ?",
+            (conversation_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+def save_agent_message(
+    conversation_id: str,
+    session_id: str,
+    role: str,
+    content: str,
+    intent: Optional[str] = None,
+    tools_used: Optional[List[str]] = None,
+    plan: Optional[List[str]] = None,
+    steps_executed: Optional[List[Dict[str, Any]]] = None,
+    evidence: Optional[List[Dict[str, Any]]] = None,
+    suggested_action: Optional[str] = None,
+    draft_notice: Optional[Dict[str, Any]] = None,
+    context_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Persists a message to the SQLite store with structured metadata."""
+    mid = f"msg-{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        with conn:
+            # Ensure conversation exists; create if not present
+            existing = conn.execute(
+                "SELECT conversation_id FROM agent_conversations WHERE conversation_id = ?",
+                (conversation_id,)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    """
+                    INSERT INTO agent_conversations (conversation_id, session_id, title, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (conversation_id, session_id, content[:40] if role == 'user' else "Investigation", now_iso, now_iso)
+                )
+            else:
+                conn.execute(
+                    "UPDATE agent_conversations SET updated_at = ? WHERE conversation_id = ?",
+                    (now_iso, conversation_id)
+                )
+
+            conn.execute(
+                """
+                INSERT INTO agent_messages (
+                    message_id, conversation_id, session_id, role, content,
+                    intent, tools_used, plan, steps_executed, evidence,
+                    suggested_action, draft_notice, context_json, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mid,
+                    conversation_id,
+                    session_id,
+                    role,
+                    content,
+                    intent or "",
+                    json.dumps(tools_used or []),
+                    json.dumps(plan or []),
+                    json.dumps(steps_executed or []),
+                    json.dumps(evidence or []),
+                    suggested_action or "",
+                    json.dumps(draft_notice) if draft_notice else "",
+                    json.dumps(context_data or {}),
+                    now_iso
+                )
+            )
+        return {
+            "message_id": mid,
+            "conversation_id": conversation_id,
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "intent": intent,
+            "timestamp": now_iso
+        }
+    finally:
+        conn.close()
+
+def get_conversation_messages(conversation_id: str) -> List[Dict[str, Any]]:
+    """Fetches all messages for a conversation ordered chronologically."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT * FROM agent_messages
+            WHERE conversation_id = ?
+            ORDER BY timestamp ASC
+            """,
+            (conversation_id,)
+        )
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["tools_used"] = json.loads(d["tools_used"]) if d.get("tools_used") else []
+            d["plan"] = json.loads(d["plan"]) if d.get("plan") else []
+            d["steps_executed"] = json.loads(d["steps_executed"]) if d.get("steps_executed") else []
+            d["evidence"] = json.loads(d["evidence"]) if d.get("evidence") else []
+            d["draft_notice"] = json.loads(d["draft_notice"]) if d.get("draft_notice") else None
+            d["context"] = json.loads(d["context_json"]) if d.get("context_json") else {}
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+def delete_conversation(conversation_id: str) -> bool:
+    """Deletes conversation and associated messages."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM agent_messages WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM agent_conversations WHERE conversation_id = ?", (conversation_id,))
+        return True
     finally:
         conn.close()
 

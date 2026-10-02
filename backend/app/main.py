@@ -5,6 +5,7 @@ from backend.app.config import settings
 from backend.app.database import init_db
 from backend.app.api.reconciliation import router as reconciliation_router
 from backend.app.api.agent import router as agent_router
+from backend.app.api.suppliers import router as suppliers_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,6 +32,7 @@ app.add_middleware(
 # Include API routers
 app.include_router(reconciliation_router)
 app.include_router(agent_router)
+app.include_router(suppliers_router)
 
 @app.get("/api/health")
 async def health_check():

@@ -33,6 +33,9 @@ from backend.app.agent.tools_registry import (
     tool_inspect_invoice,
     tool_get_supplier_discrepancies,
     tool_search_invoices,
+    tool_get_supplier_profile,
+    tool_get_all_supplier_risk_profiles,
+    tool_get_supplier_history,
     AVAILABLE_TOOLS,
     TOOL_CONTRACTS,
     TOOL_DEFINITIONS,
@@ -44,7 +47,11 @@ from backend.app.services.reconciliation_service import (
     reconcile_session,
     SESSION_DATA_CACHE,
 )
-from backend.app.database import log_audit_event
+from backend.app.database import (
+    log_audit_event,
+    save_agent_message,
+    get_conversation_messages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,13 +299,35 @@ class VyaparMitraOrchestrator:
             )
         )
 
-    def _detect_intent(self, question: str, invoice_context: Optional[str]) -> str:
+    def _detect_intent(
+        self,
+        question: str,
+        invoice_context: Optional[str] = None,
+        supplier_context: Optional[str] = None
+    ) -> str:
         q = question.lower().strip()
         if not q:
             return "EMPTY_QUESTION"
+
+        # Supplier History check
+        if any(w in q for w in [
+            "supplier history", "vendor history", "historical performance",
+            "track record", "history of", "past sessions", "past filing",
+            "history profile", "filing trend", "past performance"
+        ]):
+            return "SUPPLIER_HISTORY"
+
+        # Supplier Profile check
+        if any(w in q for w in [
+            "supplier profile", "vendor profile", "risk profile", "risk score",
+            "supplier score", "score of", "profile of", "why is supplier",
+            "why is vendor", "is this supplier risky", "supplier risk"
+        ]) or (supplier_context and any(w in q for w in ["risk", "profile", "score", "why", "breakdown", "signals", "pattern", "they", "them", "affected", "invoice"])):
+            return "SUPPLIER_PROFILE"
+
         if any(w in q for w in ["draft", "notice", "letter", "prepare notice", "supplier notice", "demand notice", "dispute notice"]):
             return "DRAFT_NOTICE"
-        if any(w in q for w in ["supplier", "vendor", "counterparty", "delinquent"]):
+        if any(w in q for w in ["all suppliers", "supplier discrepancies", "supplier list", "vendor list", "delinquent suppliers", "which suppliers", "rank suppliers", "top suppliers"]):
             return "SUPPLIER_DISCREPANCIES"
         if any(w in q for w in ["missing in 2b", "missing from 2b", "missing in gstr-2b", "missing from gstr-2b", "not in 2b", "not in gstr-2b", "unreflected", "omitted in 2b", "missing"]):
             return "MISSING_IN_2B"
@@ -308,10 +337,14 @@ class VyaparMitraOrchestrator:
             return "STATUTORY_RULE"
         if any(w in q for w in ["tax difference", "tax variance", "rate difference", "amount mismatch", "mismatch"]):
             return "TAX_DIFFERENCE"
-        if any(w in q for w in ["why is my itc at risk", "itc at risk", "blocked itc", "credit at risk", "itc risk", "why is itc", "at risk", "itc", "risk"]):
+        if any(w in q for w in ["why is my itc at risk", "itc at risk", "blocked itc", "credit at risk", "itc risk", "why is itc", "at risk", "itc"]):
             return "ITC_RISK"
+        if supplier_context:
+            return "SUPPLIER_PROFILE"
         if invoice_context or "invoice" in q or "inv-" in q or "inv/" in q or "flagged" in q or "why was" in q:
             return "INVOICE_INSPECTION"
+        if any(w in q for w in ["supplier", "vendor", "counterparty", "delinquent"]):
+            return "SUPPLIER_DISCREPANCIES"
         if any(w in q for w in ["summary", "overview", "status", "how many", "tell me about"]):
             return "GENERAL_SUMMARY"
         return "GENERAL_SUMMARY"
@@ -331,6 +364,25 @@ class VyaparMitraOrchestrator:
                     return cand
         return None
 
+    def _extract_supplier_gstin(self, text: str, context: Optional[str] = None) -> Optional[str]:
+        if context and context.strip():
+            ctx = context.strip()
+            gstin_match = re.search(r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b', ctx, re.IGNORECASE)
+            if gstin_match:
+                return gstin_match.group(0).upper()
+            return ctx
+
+        match = re.search(r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b', text, re.IGNORECASE)
+        if match:
+            return match.group(0).upper()
+
+        m2 = re.search(r'(?:supplier|vendor)\s+([A-Za-z0-9\-_]+)', text, re.IGNORECASE)
+        if m2:
+            cand = m2.group(1).strip()
+            if cand.lower() not in ["profile", "history", "risk", "status", "discrepancies", "list", "all", "the", "this"]:
+                return cand
+        return None
+
     def _extract_search_term(self, text: str) -> str:
         cleaned = re.sub(r'^(search for|search|find|lookup|show me)\s+', '', text.strip(), flags=re.IGNORECASE)
         return cleaned.strip() or text.strip()
@@ -340,9 +392,26 @@ class VyaparMitraOrchestrator:
         question: str,
         intent: str,
         invoice_context: Optional[str] = None,
-        session_id: str = "demo-session"
+        session_id: str = "demo-session",
+        supplier_context: Optional[str] = None,
     ) -> List[str]:
-        if intent == "ITC_RISK":
+        if intent == "SUPPLIER_PROFILE":
+            gstin = self._extract_supplier_gstin(question, supplier_context)
+            target = f"for supplier '{gstin}'" if gstin else "across all session counterparties"
+            return [
+                f"Calculate deterministic risk profile and scoring metrics {target}",
+                "Evaluate multi-factor risk signals (Missing in 2B, Tax Mismatch, Exposure)",
+                "Cross-reference statutory compliance and recommended remediation",
+            ]
+        elif intent == "SUPPLIER_HISTORY":
+            gstin = self._extract_supplier_gstin(question, supplier_context)
+            target = f"for supplier '{gstin}'" if gstin else "for high-risk counterparties"
+            return [
+                f"Query multi-session historical filing trends from database {target}",
+                "Detect compliance patterns (repeated missing 2B, recurring mismatches, exposure trends)",
+                "Determine long-term counterparty reliability score and filing category",
+            ]
+        elif intent == "ITC_RISK":
             return [
                 "Query session reconciliation metrics to quantify overall at-risk ITC",
                 "Retrieve top unreflected purchase invoices missing from GSTR-2B",
@@ -425,6 +494,7 @@ class VyaparMitraOrchestrator:
         session_id: str,
         step_idx: int,
         observations: List[Dict[str, Any]],
+        supplier_context: Optional[str] = None,
     ) -> Optional[ToolCallRequest]:
         executed_tools = [o.get("tool_name") for o in observations]
 
@@ -435,8 +505,37 @@ class VyaparMitraOrchestrator:
             return None
 
         inv_no = self._extract_invoice_number(question, invoice_context)
+        gstin = self._extract_supplier_gstin(question, supplier_context)
 
-        if intent == "ITC_RISK":
+        if intent == "SUPPLIER_PROFILE":
+            if gstin:
+                if "tool_get_supplier_profile" not in executed_tools:
+                    return ToolCallRequest(
+                        tool_name="tool_get_supplier_profile",
+                        arguments={"session_id": session_id, "gstin": gstin}
+                    )
+                if "tool_lookup_statutory_rule" not in executed_tools:
+                    return ToolCallRequest(tool_name="tool_lookup_statutory_rule", arguments={"rule_id": "RULE_16_2_AA"})
+            else:
+                if "tool_get_all_supplier_risk_profiles" not in executed_tools:
+                    return ToolCallRequest(tool_name="tool_get_all_supplier_risk_profiles", arguments={"session_id": session_id})
+            return None
+
+        elif intent == "SUPPLIER_HISTORY":
+            if gstin:
+                if "tool_get_supplier_history" not in executed_tools:
+                    return ToolCallRequest(tool_name="tool_get_supplier_history", arguments={"gstin": gstin})
+                if "tool_get_supplier_profile" not in executed_tools:
+                    return ToolCallRequest(
+                        tool_name="tool_get_supplier_profile",
+                        arguments={"session_id": session_id, "gstin": gstin}
+                    )
+            else:
+                if "tool_get_all_supplier_risk_profiles" not in executed_tools:
+                    return ToolCallRequest(tool_name="tool_get_all_supplier_risk_profiles", arguments={"session_id": session_id})
+            return None
+
+        elif intent == "ITC_RISK":
             if "tool_get_session_summary" not in executed_tools:
                 return ToolCallRequest(tool_name="tool_get_session_summary", arguments={"session_id": session_id})
             if "tool_get_missing_invoices" not in executed_tools:
@@ -617,9 +716,43 @@ class VyaparMitraOrchestrator:
                 human_review_required=False,
             )
 
-        # 3. Detect intent and create initial plan
-        intent = self._detect_intent(request.question, request.invoice_context)
-        plan = self._create_investigation_plan(request.question, intent, request.invoice_context, session_id)
+        # 3. Resolve context and handle multi-turn context reuse (Phase 5)
+        supplier_ctx = request.supplier_context
+        invoice_ctx = request.invoice_context
+
+        if request.conversation_id:
+            prior_messages = get_conversation_messages(request.conversation_id)
+            if prior_messages:
+                q_lower = (request.question or "").lower()
+                for prev_msg in reversed(prior_messages):
+                    prev_ctx = prev_msg.get("context") or {}
+                    if not supplier_ctx and prev_ctx.get("supplier_context"):
+                        if any(w in q_lower for w in ["they", "them", "this supplier", "their", "vendor", "profile", "history", "score", "risk", "why", "signals", "pattern", "invoices"]):
+                            supplier_ctx = prev_ctx["supplier_context"]
+                            log_audit_event(
+                                session_id=session_id,
+                                event_type="AGENT_CONTEXT_REUSED",
+                                details=f"Reused supplier_context '{supplier_ctx}' from conversation '{request.conversation_id}' for query '{request.question[:40]}'."
+                            )
+                            break
+                    if not invoice_ctx and prev_ctx.get("invoice_context"):
+                        if any(w in q_lower for w in ["it", "this invoice", "this", "why was it", "tax mismatch", "notice", "flagged"]):
+                            invoice_ctx = prev_ctx["invoice_context"]
+                            log_audit_event(
+                                session_id=session_id,
+                                event_type="AGENT_CONTEXT_REUSED",
+                                details=f"Reused invoice_context '{invoice_ctx}' from conversation '{request.conversation_id}' for query '{request.question[:40]}'."
+                            )
+                            break
+
+        # If not set from prior turn or request, extract any explicit entities in current question
+        if not supplier_ctx:
+            supplier_ctx = self._extract_supplier_gstin(request.question, None)
+        if not invoice_ctx:
+            invoice_ctx = self._extract_invoice_number(request.question, None)
+
+        intent = self._detect_intent(request.question, invoice_ctx, supplier_ctx)
+        plan = self._create_investigation_plan(request.question, intent, invoice_ctx, session_id, supplier_ctx)
 
         log_audit_event(
             session_id=session_id,
@@ -638,10 +771,11 @@ class VyaparMitraOrchestrator:
             tool_call = self._propose_next_tool_step(
                 intent=intent,
                 question=request.question,
-                invoice_context=request.invoice_context,
+                invoice_context=invoice_ctx,
                 session_id=session_id,
                 step_idx=step_idx,
                 observations=observations,
+                supplier_context=supplier_ctx,
             )
 
             if not tool_call:
@@ -725,7 +859,146 @@ class VyaparMitraOrchestrator:
                     return o["result"]
             return None
 
-        if intent == "ITC_RISK":
+        if intent == "SUPPLIER_PROFILE":
+            gstin = self._extract_supplier_gstin(request.question, supplier_ctx)
+            prof = get_obs("tool_get_supplier_profile")
+            all_profs = get_obs("tool_get_all_supplier_risk_profiles")
+
+            if not prof and gstin:
+                prof = tool_get_supplier_profile(session_id, gstin)
+
+            if prof and prof.get("supplier_gstin"):
+                score = prof.get("risk_score", 0)
+                cat = prof.get("risk_category", "CLEAN")
+                name = prof.get("supplier_name", "Supplier")
+                exp = prof.get("total_at_risk_itc", 0.0)
+                signals = prof.get("signals", [])
+                affected = prof.get("affected_invoices", [])
+
+                for inv in affected[:5]:
+                    evidence.append(
+                        AgentEvidenceItem(
+                            invoice_number=inv["invoice_number"],
+                            supplier_gstin=prof["supplier_gstin"],
+                            supplier_name=name,
+                            purchase_tax=Decimal(str(inv.get("purchase_tax", 0))) if inv.get("purchase_tax") is not None else None,
+                            gstr2b_tax=Decimal(str(inv.get("gstr2b_tax", 0))) if inv.get("gstr2b_tax") is not None else None,
+                            tax_difference=Decimal(str(inv.get("tax_difference", 0))),
+                            status=inv["status"],
+                            statutory_rule=inv.get("statutory_rule", "Section 16(2)(aa)"),
+                            details=inv.get("reason", f"Risk score: {score}/100")
+                        )
+                    )
+
+                if not evidence:
+                    evidence.append(
+                        AgentEvidenceItem(
+                            invoice_number=f"{prof.get('total_invoices', 0)} Invoices",
+                            supplier_gstin=prof["supplier_gstin"],
+                            supplier_name=name,
+                            purchase_tax=Decimal(str(prof.get("total_purchase_tax", 0))),
+                            gstr2b_tax=Decimal(str(prof.get("total_2b_tax", 0))),
+                            tax_difference=Decimal(str(exp)),
+                            status=cat,
+                            statutory_rule="Section 16(2)(aa)",
+                            details=f"Risk Score: {score}/100 ({cat}). {len(signals)} risk signal(s) active."
+                        )
+                    )
+
+                facts_summary = prof
+                sig_desc = ", ".join(s["label"] for s in signals) if signals else "No adverse risk signals"
+                fallback_answer = (
+                    f"Supplier {name} ({prof['supplier_gstin']}) has a verified Risk Score of {score}/100 ({cat}). "
+                    f"Total at-risk ITC exposure is ₹{exp:,.2f} across {prof.get('missing_in_2b', 0)} missing invoice(s) and {prof.get('tax_mismatches', 0)} amount mismatch(es). "
+                    f"Active Risk Signals: {sig_desc}."
+                )
+                suggested_action = prof.get("recommended_actions", ["Review supplier compliance and draft dispute notice."])[0]
+            elif all_profs:
+                for p in all_profs[:5]:
+                    evidence.append(
+                        AgentEvidenceItem(
+                            invoice_number=f"{p.get('total_invoices', 0)} Invoices",
+                            supplier_gstin=p["supplier_gstin"],
+                            supplier_name=p["supplier_name"],
+                            purchase_tax=Decimal(str(p.get("total_purchase_tax", 0))),
+                            gstr2b_tax=Decimal(str(p.get("total_2b_tax", 0))),
+                            tax_difference=Decimal(str(p.get("at_risk_itc", 0))),
+                            status=p.get("risk_category", "LOW"),
+                            statutory_rule="Section 16(2)(aa)",
+                            details=f"Risk Score: {p.get('risk_score', 0)}/100. Signals: {len(p.get('signals', []))}."
+                        )
+                    )
+                high_risk = [p for p in all_profs if p.get("risk_category") in ("CRITICAL", "HIGH")]
+                fallback_answer = (
+                    f"Audited {len(all_profs)} suppliers in session. Identified {len(high_risk)} high/critical risk supplier(s). "
+                    f"Top exposure supplier: {all_profs[0]['supplier_name']} ({all_profs[0]['supplier_gstin']}) with risk score {all_profs[0]['risk_score']}/100 and ₹{all_profs[0].get('at_risk_itc', 0.0):,.2f} at-risk ITC."
+                )
+                suggested_action = "Select a supplier to inspect full risk breakdown and affected invoices."
+            else:
+                fallback_answer = "No supplier risk data found for this session."
+                suggested_action = "Reconcile invoices or upload a dataset to compute supplier risk."
+
+        elif intent == "SUPPLIER_HISTORY":
+            gstin = self._extract_supplier_gstin(request.question, supplier_ctx)
+            hist = get_obs("tool_get_supplier_history")
+            if not hist and gstin:
+                hist = tool_get_supplier_history(gstin)
+
+            if hist and hist.get("supplier_gstin"):
+                name = hist.get("supplier_name", "Supplier")
+                has_history = hist.get("has_sufficient_history", False)
+                patterns = hist.get("detected_patterns", [])
+                trends = hist.get("trends", [])
+
+                for t in trends[:5]:
+                    evidence.append(
+                        AgentEvidenceItem(
+                            invoice_number=f"Session {t.get('session_id')}",
+                            supplier_gstin=hist["supplier_gstin"],
+                            supplier_name=name,
+                            purchase_tax=None,
+                            gstr2b_tax=None,
+                            tax_difference=Decimal(str(t.get("at_risk_itc", 0))),
+                            status=f"Missing: {t.get('missing_in_2b', 0)}, Mismatches: {t.get('tax_mismatches', 0)}",
+                            statutory_rule="Historical Filing Compliance",
+                            details=f"Recorded: {t.get('created_at', 'N/A')}"
+                        )
+                    )
+
+                if not evidence:
+                    evidence.append(
+                        AgentEvidenceItem(
+                            invoice_number="HISTORY-SUMMARY",
+                            supplier_gstin=hist["supplier_gstin"],
+                            supplier_name=name,
+                            purchase_tax=None,
+                            gstr2b_tax=None,
+                            tax_difference=None,
+                            status="INSUFFICIENT_HISTORY" if not has_history else "MULTI_SESSION_EVALUATED",
+                            statutory_rule="Historical Filing Compliance",
+                            details=f"Sessions on record: {hist.get('sessions_seen_count', 0)}."
+                        )
+                    )
+
+                facts_summary = hist
+                if has_history:
+                    pat_str = "; ".join(patterns) if patterns else "Consistent compliance with minimal anomalies."
+                    fallback_answer = (
+                        f"Historical analysis for {name} ({hist['supplier_gstin']}) across {hist.get('sessions_seen_count', 0)} reconciliation sessions: "
+                        f"Identified {len(patterns)} compliance pattern(s): {pat_str}. "
+                        f"Reliability assessment indicates attention is required for recurring filing gaps."
+                    )
+                else:
+                    fallback_answer = (
+                        f"Supplier {name} ({hist['supplier_gstin']}) has only {hist.get('sessions_seen_count', 0)} session(s) recorded in the database. "
+                        f"Insufficient historical data to establish recurring non-compliance patterns (minimum 2 historical sessions required)."
+                    )
+                suggested_action = "Review current session supplier risk profile or upload prior period returns."
+            else:
+                fallback_answer = "Please specify a supplier GSTIN to view historical compliance trends."
+                suggested_action = "Select a supplier from the Supplier Intelligence tab."
+
+        elif intent == "ITC_RISK":
             s = get_obs("tool_get_session_summary") or session_summary
             missing_invoices = get_obs("tool_get_missing_invoices") or []
             rule_info = get_obs("tool_lookup_statutory_rule") or {}
@@ -1095,8 +1368,45 @@ class VyaparMitraOrchestrator:
             details=f"Conversational query '{request.question[:60]}' answered (Intent: {intent}, Tools: {', '.join(tools_used)})."
         )
 
+        message_id = None
+        if request.conversation_id:
+            # 1. Persist user message
+            save_agent_message(
+                conversation_id=request.conversation_id,
+                session_id=session_id,
+                role="user",
+                content=request.question,
+                intent=intent,
+                context_data={
+                    "supplier_context": supplier_ctx,
+                    "invoice_context": invoice_ctx,
+                }
+            )
+
+            # 2. Persist assistant response
+            asst_record = save_agent_message(
+                conversation_id=request.conversation_id,
+                session_id=session_id,
+                role="assistant",
+                content=final_answer,
+                intent=intent,
+                tools_used=tools_used,
+                plan=plan,
+                steps_executed=[s.model_dump() for s in steps_executed],
+                evidence=[e.model_dump(mode="json") for e in evidence],
+                suggested_action=suggested_action,
+                draft_notice=draft_notice.model_dump(mode="json") if draft_notice else None,
+                context_data={
+                    "supplier_context": supplier_ctx,
+                    "invoice_context": invoice_ctx,
+                }
+            )
+            message_id = asst_record.get("message_id")
+
         return AgentInvestigateResponse(
             session_id=session_id,
+            conversation_id=request.conversation_id,
+            message_id=message_id,
             user_question=request.question,
             intent=intent,
             plan=plan,
